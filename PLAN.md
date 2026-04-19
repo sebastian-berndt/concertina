@@ -297,12 +297,71 @@ Each phase is independently testable before moving to the next. The 6-reed mini 
 | 12 | `lever_router.py` (v2) | obstacles, shapely | visibility graph + Dijkstra (if needed) |
 | 13 | `cost_function.py` (Tier 3) | all | pivot access, CoG, chamber proportion |
 
+## Completed (as of 2026-04-19)
+
+Phases 1-8 are implemented with 58 passing tests. All modules exist and work end-to-end on the 6-reed mini fixture. Full 26-key runs produce plausible layouts but need further tuning.
+
+**Files implemented:**
+- `config.py`, `hayden_layout.py`, `reed_specs.py`, `obstacles.py`
+- `lever_router.py` (v1), `cost_function.py` (all tiers), `cost_fast.py`
+- `solver.py`, `visualize.py`, `main.py`
+- Tests: `test_config.py`, `test_hayden_layout.py`, `test_reed_specs.py`, `test_obstacles.py`, `test_lever_router.py`, `test_cost_function.py`
+- `tests/mini_fixture.py`
+
+## Learnings from First Full-Scale Runs
+
+### 1. Shapely is too slow for the optimizer inner loop
+- **Problem:** The shapely-based cost function (`cost_function.py`) takes ~154ms per evaluation. With 52D and popsize=12, one generation takes ~96s. A 150-generation run would take ~4 hours.
+- **Solution:** `cost_fast.py` uses pure numpy math (point-to-line distances, bounding-circle overlap) for a **46x speedup** (~3.4ms/eval). The shapely version is kept for final validation/visualization only.
+- **Remaining issue:** The fast function's bounding-circle collision approximation is too loose -- layouts that look collision-free to `cost_fast` still have real collisions when validated with shapely. Need tighter analytical collision checks.
+
+### 2. Differential evolution struggles with 52D
+- **Problem:** 52D (26 reeds x 2 params) is at the edge of what DE can handle. With popsize=15 and 300 generations it doesn't reliably find collision-free layouts. The search space is too large for random exploration.
+- **Better approach:** Greedy sequential placement as a seeding strategy. Place one reed at a time (largest first), finding the best position for each given already-placed reeds. This produces a good starting point that DE can then polish.
+- **Result:** Greedy placement achieves 0 reed collisions and 14/26 feasible levers on the first try.
+
+### 3. Levers pass UNDER buttons, not around them
+- **Problem:** Initially the obstacle field treated button holes as no-go zones for levers. This made it nearly impossible to route levers in a dense 26-key grid since any lever crossing multiple rows would hit a button hole.
+- **Fix:** Levers pass through slots underneath the action board. They do NOT need to avoid button holes. Obstacles for lever routing should only include: other reed plates, pivot posts, and other levers. Button holes are only obstacles for reed plate placement.
+- **Action needed:** Update `obstacles.py` to have separate obstacle sets for "reed placement" vs "lever routing".
+
+### 4. Minimum lever length matters
+- **Problem:** The greedy placer initially placed reeds as close as possible to buttons, resulting in levers of 0-10mm -- way too short mechanically.
+- **Fix:** Enforce minimum lever length of 35mm in the placement search. Skip any candidate position where the button-to-pallet distance is below this threshold.
+
+### 5. Placement order affects quality
+- Placing largest (bass) reeds first works well -- they need the most space and constrain everything else.
+- The first ~14 reeds place cleanly with both reed-reed and lever-reed clearance.
+- Later reeds (15-26) struggle because space is filled. These need either better angular search resolution or the v2 dogleg router.
+
+## What to Do Next
+
+### Priority 1: Fix obstacle model for lever routing
+Update `obstacles.py` to separate "placement obstacles" (buttons + reeds) from "routing obstacles" (reeds + pivots only). This single change should increase feasible levers from 14/26 to ~20+/26.
+
+### Priority 2: Greedy placer as a proper module
+Extract the greedy placement logic into `concertina/greedy_placer.py`:
+- Place reeds sequentially, largest first
+- Check reed-reed collision (shapely, since this only runs once per reed)
+- Check lever-reed collision for each candidate
+- Enforce minimum lever length
+- Use as the default initial layout, optionally followed by DE polishing
+
+### Priority 3: Tighter fast collision check
+Replace bounding-circle overlap in `cost_fast.py` with oriented bounding box (OBB) overlap. This is still numpy-only but much tighter than circles for rectangular reed plates.
+
+### Priority 4: v2 lever router
+Implement visibility graph + Dijkstra for multi-bend doglegs. Needed for the remaining ~6 levers that can't route straight through the dense layout.
+
+### Priority 5: DE polish stage
+Use the greedy result as `x0` for a short DE run (50-100 generations) to fine-tune positions. This should be fast since the starting point is already near-feasible.
+
 ## Key Risks and Mitigations
 
-1. **78D is large for differential evolution.** Mitigate with two-stage solver (52D coarse then 78D refine) as the default pipeline, plus a physically motivated initial guess.
-2. **Lever routing in inner loop is expensive.** Mitigate with `_try_straight` fast path (~70% of levers) and caching visibility graphs per evaluation.
+1. **52D is at the edge for DE.** Mitigate with greedy seeding (the primary strategy) followed by short DE polish.
+2. **Fast cost function is too loose.** Mitigate with OBB collision checks instead of bounding circles.
 3. **Ratio floor:** The PDF mentions treble ratio of 1.7:1, but at 2.5mm travel this gives only 4.25mm lift, violating the 4.5mm minimum. Using 1.8:1 as the floor instead.
-4. **Lever-lever collisions are O(n^2).** 325 pairs for 26 levers -- manageable. Use shapely STRtree if needed.
+4. **Lever routing gets harder as layout fills.** The v2 visibility graph router is needed for the last ~6 reeds in a dense 26-key layout.
 5. **Worker parallelism requires picklable functions.** Keep objective as module-level function, not closure.
 
 ## Future: Build123d Integration (not in scope yet)
