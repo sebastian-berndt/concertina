@@ -2,10 +2,9 @@
 
 import math
 
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString
 
 from concertina.config import ConcertinaConfig
-from concertina.obstacles import ObstacleField
 from concertina.lever_router import LeverRouter, LeverPath, route_all_levers
 from concertina.reed_specs import ReedPlate, ReedSpec
 from tests.mini_fixture import make_mini_layout, make_mini_reeds, make_mini_good_placement
@@ -15,14 +14,13 @@ def _make_router():
     layout = make_mini_layout()
     reeds = make_mini_reeds(layout)
     plates = make_mini_good_placement(reeds)
-    field = ObstacleField(layout, plates)
-    router = LeverRouter(field)
-    return router, layout, reeds, plates, field
+    router = LeverRouter(plates)
+    return router, layout, reeds, plates
 
 
 def test_straight_lever_no_obstacles():
     """A lever far from any obstacle should be straight."""
-    router, _, _, _, _ = _make_router()
+    router, _, _, _ = _make_router()
     path = router.route(
         button_pos=(-200, 0),
         pallet_pos=(-200, -80),
@@ -36,7 +34,7 @@ def test_straight_lever_no_obstacles():
 
 def test_pivot_at_correct_ratio():
     """Pivot should divide lever at 1/(R+1) from button end."""
-    router, _, _, _, _ = _make_router()
+    router, _, _, _ = _make_router()
     path = router.route(
         button_pos=(0, 0),
         pallet_pos=(0, -90),
@@ -51,7 +49,7 @@ def test_pivot_at_correct_ratio():
 
 def test_pivot_ratio_1_to_1():
     """For ratio 1.0, pivot should be at midpoint."""
-    router, _, _, _, _ = _make_router()
+    router, _, _, _ = _make_router()
     path = router.route(
         button_pos=(0, 0),
         pallet_pos=(0, -80),
@@ -66,8 +64,7 @@ def test_route_all_returns_correct_count():
     layout = make_mini_layout()
     reeds = make_mini_reeds(layout)
     plates = make_mini_good_placement(reeds)
-    field = ObstacleField(layout, plates)
-    paths = route_all_levers(layout, plates, reeds, field)
+    paths = route_all_levers(layout, plates, reeds)
     assert len(paths) == 6
 
 
@@ -75,8 +72,7 @@ def test_all_levers_have_positive_length():
     layout = make_mini_layout()
     reeds = make_mini_reeds(layout)
     plates = make_mini_good_placement(reeds)
-    field = ObstacleField(layout, plates)
-    paths = route_all_levers(layout, plates, reeds, field)
+    paths = route_all_levers(layout, plates, reeds)
     for p in paths:
         assert p.total_length > 0
 
@@ -106,10 +102,8 @@ def test_min_lever_length_constraint():
     layout = make_mini_layout()
     reeds = make_mini_reeds(layout)
     plates = make_mini_good_placement(reeds)
-    field = ObstacleField(layout, plates, config)
-    router = LeverRouter(field, config)
+    router = LeverRouter(plates, config)
 
-    # Route a short lever
     path = router.route(
         button_pos=(0, 0),
         pallet_pos=(0, -50),  # only 50mm, below 100mm threshold

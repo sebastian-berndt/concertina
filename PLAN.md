@@ -12,9 +12,12 @@ concertina/
   config.py            # Physical constants and design parameters
   hayden_layout.py     # Button grid generation (Hayden isometric layout)
   reed_specs.py        # Reed plate dimensions and geometry
-  obstacles.py         # No-go zone generation and collision detection
-  lever_router.py      # Visibility graph + Dijkstra for dogleg lever paths
-  cost_function.py     # Objective function J(X) combining all penalties
+  geometry.py          # Fast numpy 2D geometry (SAT, line-rect distance)
+  greedy_placer.py     # Sequential reed placement (primary strategy)
+  obstacles.py         # Shapely-based collision detection (validation only)
+  lever_router.py      # Lever pathfinding, numpy-based (straight + dogleg)
+  cost_function.py     # Shapely-based objective (validation only)
+  cost_fast.py         # Numpy-based objective (for DE optimizer)
   solver.py            # Differential evolution setup and execution
   visualize.py         # Matplotlib 2D layout visualization
   main.py              # CLI entry point
@@ -302,18 +305,20 @@ Each phase is independently testable before moving to the next. The 6-reed mini 
 Phases 1-8 are implemented with 58 passing tests. All modules exist and work end-to-end on the 6-reed mini fixture. Full 26-key runs produce plausible layouts but need further tuning.
 
 **Files implemented:**
-- `config.py`, `hayden_layout.py`, `reed_specs.py`, `obstacles.py`
-- `lever_router.py` (v1), `cost_function.py` (all tiers), `cost_fast.py`
+- `config.py`, `hayden_layout.py`, `reed_specs.py`, `geometry.py`, `obstacles.py`
+- `greedy_placer.py`, `lever_router.py` (v1, numpy-based), `cost_function.py` (all tiers), `cost_fast.py`
 - `solver.py`, `visualize.py`, `main.py`
-- Tests: `test_config.py`, `test_hayden_layout.py`, `test_reed_specs.py`, `test_obstacles.py`, `test_lever_router.py`, `test_cost_function.py`
+- Tests: `test_config.py`, `test_hayden_layout.py`, `test_reed_specs.py`, `test_geometry.py`, `test_obstacles.py`, `test_lever_router.py`, `test_cost_function.py`
 - `tests/mini_fixture.py`
+
+**Shapely boundary:** Shapely is only used in `cost_function.py` (validation), `obstacles.py` (validation), and `visualize.py` (plotting). All hot paths use `geometry.py` (numpy).
 
 ## Learnings from First Full-Scale Runs
 
-### 1. Shapely is too slow for the optimizer inner loop
-- **Problem:** The shapely-based cost function (`cost_function.py`) takes ~154ms per evaluation. With 52D and popsize=12, one generation takes ~96s. A 150-generation run would take ~4 hours.
-- **Solution:** `cost_fast.py` uses pure numpy math (point-to-line distances, bounding-circle overlap) for a **46x speedup** (~3.4ms/eval). The shapely version is kept for final validation/visualization only.
-- **Remaining issue:** The fast function's bounding-circle collision approximation is too loose -- layouts that look collision-free to `cost_fast` still have real collisions when validated with shapely. Need tighter analytical collision checks.
+### 1. Shapely is too slow for ANY hot path
+- **Problem:** The shapely-based cost function (`cost_function.py`) takes ~154ms per evaluation. The greedy placer and lever router also used shapely, making them unnecessarily slow.
+- **Solution:** `geometry.py` provides pure numpy 2D geometry primitives: SAT (Separating Axis Theorem) for rotated rectangle overlap, line-segment-to-rectangle distance for lever clearance checks. All hot paths (greedy placer, lever router, fast cost function) use these. Shapely is **only** used for final validation (`cost_function.py`) and visualization (`visualize.py`).
+- **Result:** Lever routing for 26 reeds: 0.07s (numpy) vs seconds (shapely). Greedy placement for 26 reeds: ~7s total.
 
 ### 2. Differential evolution struggles with 52D
 - **Problem:** 52D (26 reeds x 2 params) is at the edge of what DE can handle. With popsize=15 and 300 generations it doesn't reliably find collision-free layouts. The search space is too large for random exploration.
@@ -347,8 +352,8 @@ Extract the greedy placement logic into `concertina/greedy_placer.py`:
 - Enforce minimum lever length
 - Use as the default initial layout, optionally followed by DE polishing
 
-### Priority 3: Tighter fast collision check
-Replace bounding-circle overlap in `cost_fast.py` with oriented bounding box (OBB) overlap. This is still numpy-only but much tighter than circles for rectangular reed plates.
+### Priority 3: Tighter fast collision check ✅ DONE
+`geometry.py` now uses SAT (Separating Axis Theorem) for exact rotated-rectangle overlap and line-segment-to-rectangle distance for lever clearance. Replaces the bounding-circle approximation in the greedy placer and lever router.
 
 ### Priority 4: v2 lever router
 Implement visibility graph + Dijkstra for multi-bend doglegs. Needed for the remaining ~6 levers that can't route straight through the dense layout.

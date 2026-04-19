@@ -2,8 +2,10 @@
 
 Places reeds one at a time (largest first), finding the closest
 collision-free position for each given already-placed reeds.
-Much faster and more reliable than global optimization for the
-initial layout.
+
+Uses pure numpy geometry (no shapely) for all hot-path checks:
+- Reed-reed overlap: Separating Axis Theorem (SAT)
+- Lever-reed collision: line-segment to rotated-rectangle distance
 """
 
 from __future__ import annotations
@@ -12,10 +14,16 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from shapely.geometry import LineString
 
 from concertina.config import ConcertinaConfig
-from concertina.hayden_layout import HaydenLayout, HaydenButton
+from concertina.geometry import (
+    rect_corners,
+    rect_corners_buffered,
+    rects_overlap,
+    segment_to_rect_dist,
+    pallet_position,
+)
+from concertina.hayden_layout import HaydenLayout
 from concertina.reed_specs import ReedSpec, ReedPlate
 
 
@@ -40,6 +48,9 @@ def greedy_place(
     verbose: bool = False,
 ) -> PlacementResult:
     """Place all reeds using a greedy sequential strategy.
+
+    All geometry checks use numpy math (SAT, line-rect distance).
+    No shapely in this function.
 
     Algorithm:
     1. Sort reeds by area (largest/bass first)
@@ -73,15 +84,15 @@ def greedy_place(
     # Place largest first
     order = sorted(range(n), key=lambda i: -reed_specs[i].length * reed_specs[i].width)
 
-    placed_polys = []       # buffered reed polygons for collision checking
-    placement_map = [None] * n
+    # Pre-computed corners of already-placed reeds (buffered by clearance)
+    placed_corners: list[np.ndarray] = []
+    placement_map: list[ReedPlate | None] = [None] * n
     feasible_count = 0
     relaxed_count = 0
     fallback_count = 0
 
     r_min, r_max = r_range
-    theta_step = math.radians(theta_step_deg)
-    thetas = np.arange(0, 2 * math.pi, theta_step)
+    thetas = np.arange(0, 2 * math.pi, math.radians(theta_step_deg))
     radii = np.arange(r_min, r_max + r_step, r_step)
 
     for idx in order:
@@ -89,15 +100,14 @@ def greedy_place(
         bx, by = btn_xy[spec.note]
 
         plate, tag = _find_best_position(
-            spec, bx, by, placed_polys, radii, thetas,
+            spec, bx, by, placed_corners, radii, thetas,
             clearance, lever_hw, min_lever_length,
             check_lever=True,
         )
 
         if plate is None:
-            # Relaxed: skip lever-reed check
             plate, tag = _find_best_position(
-                spec, bx, by, placed_polys, radii, thetas,
+                spec, bx, by, placed_corners, radii, thetas,
                 clearance, lever_hw, min_lever_length,
                 check_lever=False,
             )
@@ -105,7 +115,6 @@ def greedy_place(
                 tag = "relaxed"
 
         if plate is None:
-            # Fallback: place far out
             theta = 2 * math.pi * idx / n
             plate = ReedPlate(spec=spec, r=r_max, theta=theta, phi=theta + math.pi)
             tag = "FALLBACK"
@@ -117,14 +126,24 @@ def greedy_place(
             relaxed_count += 1
 
         if verbose:
-            px, py = plate.pallet_position
+            px, py = pallet_position(
+                plate.r * math.cos(plate.theta),
+                plate.r * math.sin(plate.theta),
+                spec.length, plate.phi,
+            )
             lever_len = math.sqrt((bx - px)**2 + (by - py)**2)
             print(f"  {spec.note:4s}: r={plate.r:5.1f} "
-                  f"θ={math.degrees(plate.theta):6.1f}° "
+                  f"\u03b8={math.degrees(plate.theta):6.1f}\u00b0 "
                   f"lever={lever_len:5.1f}mm [{tag}]")
 
         placement_map[idx] = plate
-        placed_polys.append(plate.get_polygon(clearance=clearance))
+        # Store buffered corners for future collision checks
+        cx = plate.r * math.cos(plate.theta)
+        cy = plate.r * math.sin(plate.theta)
+        corners = rect_corners_buffered(
+            cx, cy, spec.length, spec.width, plate.phi, clearance,
+        )
+        placed_corners.append(corners)
 
     return PlacementResult(
         plates=placement_map,
@@ -138,7 +157,7 @@ def _find_best_position(
     spec: ReedSpec,
     bx: float,
     by: float,
-    placed_polys: list,
+    placed_corners: list[np.ndarray],
     radii: np.ndarray,
     thetas: np.ndarray,
     clearance: float,
@@ -147,6 +166,9 @@ def _find_best_position(
     check_lever: bool,
 ) -> tuple[ReedPlate | None, str]:
     """Search for the best position for one reed plate.
+
+    All checks use numpy geometry (SAT for overlap, line-rect distance
+    for lever clearance). No shapely.
 
     Returns (plate, tag) or (None, "") if nothing found.
     """
@@ -159,29 +181,41 @@ def _find_best_position(
             cy = r * math.sin(theta)
             phi = math.atan2(by - cy, bx - cx)
 
-            plate = ReedPlate(spec=spec, r=r, theta=theta, phi=phi)
-
-            # Check lever length first (fast reject)
-            px, py = plate.pallet_position
+            # Pallet position
+            px, py = pallet_position(cx, cy, spec.length, phi)
             lever_len = math.sqrt((bx - px)**2 + (by - py)**2)
+
+            # Fast rejects
             if lever_len < min_lever_length:
                 continue
             if lever_len >= best_lever_len:
-                continue  # already have a shorter option
-
-            # Check reed-reed collision
-            poly = plate.get_polygon(clearance=clearance)
-            if any(poly.intersects(ep) for ep in placed_polys):
                 continue
 
-            # Check lever-reed collision (optional)
-            if check_lever and placed_polys:
-                lever_buf = LineString([(bx, by), (px, py)]).buffer(lever_hw)
-                if any(lever_buf.intersects(ep) for ep in placed_polys):
+            # Reed-reed overlap check (SAT)
+            candidate_corners = rect_corners_buffered(
+                cx, cy, spec.length, spec.width, phi, clearance,
+            )
+            overlaps = False
+            for existing in placed_corners:
+                if rects_overlap(candidate_corners, existing):
+                    overlaps = True
+                    break
+            if overlaps:
+                continue
+
+            # Lever-reed collision check
+            if check_lever and placed_corners:
+                lever_blocked = False
+                for existing in placed_corners:
+                    dist = segment_to_rect_dist((bx, by), (px, py), existing)
+                    if dist < lever_hw:
+                        lever_blocked = True
+                        break
+                if lever_blocked:
                     continue
 
             best_lever_len = lever_len
-            best_plate = plate
+            best_plate = ReedPlate(spec=spec, r=r, theta=theta, phi=phi)
 
     tag = "OK" if best_plate is not None else ""
     return best_plate, tag

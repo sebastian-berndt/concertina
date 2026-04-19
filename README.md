@@ -26,10 +26,12 @@ concertina/
   config.py          ─── Configuration dataclasses (all physical params)
   hayden_layout.py   ─── Button grid generation
   reed_specs.py      ─── Reed plate dimensions and geometry
-  obstacles.py       ─── Collision detection (no-go zones)
-  lever_router.py    ─── Lever pathfinding (straight + dogleg)
-  cost_function.py   ─── Shapely-based objective (accurate, for validation)
-  cost_fast.py       ─── Numpy-based objective (fast, for optimization)
+  geometry.py        ─── Fast numpy 2D geometry (SAT overlap, line-rect distance)
+  greedy_placer.py   ─── Sequential reed placement (primary layout strategy)
+  obstacles.py       ─── Shapely-based collision detection (validation only)
+  lever_router.py    ─── Lever pathfinding (straight + dogleg, numpy-based)
+  cost_function.py   ─── Shapely-based objective (validation only)
+  cost_fast.py       ─── Numpy-based objective (for DE optimizer)
   solver.py          ─── Differential evolution wrapper
   visualize.py       ─── Matplotlib 2D rendering
   main.py            ─── CLI entry point
@@ -131,9 +133,27 @@ The cost function judges a layout. Lower is better.
 
 **Tier 3 (production polish):** pivot accessibility, center of gravity balance, chamber proportionality.
 
-Two implementations exist:
-- **`cost_function.py`** — Shapely-based, exact geometry, ~154ms/eval. Used for final validation.
-- **`cost_fast.py`** — Numpy-based, approximate geometry, ~3.4ms/eval (46× faster). Used during optimization.
+### Geometry: Shapely vs Numpy
+
+A critical architectural decision: **shapely is never used in hot paths.** All real-time geometry (greedy placement, lever routing, optimizer cost function) uses pure numpy math in `geometry.py`:
+
+| Operation | Numpy (`geometry.py`) | Shapely (`obstacles.py`) |
+|-----------|----------------------|-------------------------|
+| Reed-reed overlap | SAT (Separating Axis Theorem) | `Polygon.intersects()` |
+| Lever-reed collision | Line-segment to rect distance | `LineString.buffer().intersects()` |
+| Lever-circle collision | Point-to-segment distance | `Point.buffer().intersects()` |
+| Speed | ~3ms per full evaluation | ~154ms per full evaluation |
+| Used by | `greedy_placer`, `lever_router`, `cost_fast` | `cost_function` (validation), `visualize` |
+
+Shapely remains for:
+- **Final validation** (`cost_function.py`) — exact geometry confirms the numpy results
+- **Visualization** (`visualize.py`) — plotting polygons
+- **Obstacle field** (`obstacles.py`) — used by the shapely cost function only
+
+Three cost function implementations exist:
+- **`cost_function.py`** — Shapely-based, exact geometry, ~154ms/eval. Used for final validation only.
+- **`cost_fast.py`** — Numpy-based, approximate geometry, ~3.4ms/eval. Used by DE optimizer.
+- **`greedy_placer.py`** — Uses `geometry.py` directly for placement checks. Primary layout strategy.
 
 ### Phase 6: Optimize (Optional Polish)
 
