@@ -122,13 +122,10 @@ class LeverRouter:
         pallet_pos: tuple[float, float],
         lever_index: int,
     ) -> LineString | None:
-        """Return straight line if it clears all obstacles, else None."""
+        """Return straight line if it clears routing obstacles, else None."""
         line = LineString([button_pos, pallet_pos])
         buffered = line.buffer(self._lever_width / 2)
-        merged = self.obstacles.get_merged_obstacle(
-            exclude_button_index=lever_index,
-            exclude_reed_index=lever_index,
-        )
+        merged = self.obstacles.get_merged_routing(exclude_reed_index=lever_index)
 
         if not buffered.intersects(merged):
             return line
@@ -147,15 +144,11 @@ class LeverRouter:
         """
         straight = LineString([button_pos, pallet_pos])
         buffered_straight = straight.buffer(self._lever_width / 2)
-        merged = self.obstacles.get_merged_obstacle(
-            exclude_button_index=lever_index,
-            exclude_reed_index=lever_index,
-        )
+        merged = self.obstacles.get_merged_routing(exclude_reed_index=lever_index)
 
         # Find which individual obstacles block the path
         blocking = []
-        for obs in self.obstacles.get_all_obstacles(
-            exclude_button_index=lever_index,
+        for obs in self.obstacles.get_routing_obstacles(
             exclude_reed_index=lever_index,
         ):
             if buffered_straight.intersects(obs):

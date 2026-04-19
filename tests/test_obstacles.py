@@ -83,23 +83,36 @@ def test_lever_collision_clear_path():
     assert area == 0.0
 
 
-def test_lever_collision_through_button():
-    """A lever through another button should report collision."""
+def test_lever_collision_through_button_is_allowed():
+    """Levers pass under buttons, so crossing a button hole is NOT a collision."""
     field, layout, _, _ = _make_field()
     btns = layout.get_all_enabled()
-    # Draw lever from btn[0] through btn[1]
-    line = LineString([
-        (btns[0].x, btns[0].y),
-        (btns[2].x, btns[2].y - 50),  # passes near btn[1]
-    ])
-    # This should hit btn[1]'s obstacle if the line crosses it
-    # Use a line that definitely crosses btn[1]
+    # A lever that passes through another button's hole
     line = LineString([
         (btns[0].x, btns[0].y + 1),
         (btns[3].x, btns[3].y + 1),
     ])
     area = field.check_lever_collision(line, 3.0, lever_index=0)
+    assert area == 0.0  # buttons are NOT routing obstacles
+
+
+def test_lever_collision_through_reed():
+    """A lever through another reed plate SHOULD report collision."""
+    field, _, _, plates = _make_field()
+    # Draw a lever that crosses through the center of reed plate 2
+    cx, cy = plates[2].center
+    line = LineString([(cx - 50, cy), (cx + 50, cy)])
+    area = field.check_lever_collision(line, 3.0, lever_index=0)
     assert area > 0
+
+
+def test_routing_vs_placement_obstacles():
+    """Routing obstacles should not include buttons."""
+    field, _, _, _ = _make_field()
+    placement = field.get_placement_obstacles()
+    routing = field.get_routing_obstacles()
+    # Placement includes buttons, routing does not
+    assert len(placement) > len(routing)
 
 
 def test_pivot_obstacles():
