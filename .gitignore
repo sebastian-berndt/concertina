@@ -8,3 +8,5 @@ build/
 *.json
 !pyproject.toml
 .pytest_cache/
+.DS_Store
+*.pdf
