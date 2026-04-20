@@ -112,6 +112,24 @@ class ReedDimensions:
 
 
 @dataclass
+class HexBoundary:
+    """Hexagonal reed pan boundary."""
+
+    across_flats: float = 165.0    # mm (6.5" Beaumont standard)
+    wall_thickness: float = 3.0    # mm, wood wall around the edge
+
+    @property
+    def inner_radius(self) -> float:
+        """Usable radius (across flats / 2 minus wall)."""
+        return self.across_flats / 2 - self.wall_thickness
+
+    @property
+    def outer_radius(self) -> float:
+        """Circumradius of the hexagon (across corners / 2)."""
+        return self.across_flats / 2 / math.cos(math.pi / 6)
+
+
+@dataclass
 class ConcertinaConfig:
     """Top-level configuration combining all sub-configs."""
 
@@ -121,6 +139,7 @@ class ConcertinaConfig:
     weights: CostWeights = field(default_factory=CostWeights)
     bounds: SolverBounds = field(default_factory=SolverBounds)
     reeds: ReedDimensions = field(default_factory=ReedDimensions)
+    hex_boundary: HexBoundary = field(default_factory=HexBoundary)
 
     @classmethod
     def defaults(cls) -> ConcertinaConfig:

@@ -28,6 +28,7 @@ from concertina.geometry import (
     segment_to_rect_dist,
     pallet_position,
     lever_obstacle_corners,
+    rect_in_hexagon,
 )
 from concertina.hayden_layout import HaydenLayout
 from concertina.reed_specs import ReedSpec, ReedPlate
@@ -174,6 +175,9 @@ def sector_place(
     btn_radius = config.instrument.button_radius + config.clearance.static_floor
     button_circles = [((b.x, b.y), btn_radius) for b in buttons]
 
+    # Hex boundary for reed pan
+    hex_af = config.hex_boundary.across_flats - 2 * config.hex_boundary.wall_thickness
+
     r_min, r_max = r_range
     radii = np.arange(r_min, r_max + r_step, r_step)
     margin = math.radians(angular_margin_deg)
@@ -202,15 +206,14 @@ def sector_place(
                 if lever_len < min_lever_length:
                     continue
 
-                # Score: closeness to target lever length (lower = better)
-                score = abs(lever_len - target_lever_length)
-                if score >= best_score:
-                    continue
-
-                # Check reed overlap with placed reeds
+                # Check reed fits inside hex boundary
                 candidate = rect_corners_buffered(
                     cx, cy, spec.length, spec.width, phi, clearance,
                 )
+                if not rect_in_hexagon(candidate, hex_af):
+                    continue
+
+                # Check reed doesn't overlap placed reeds
                 overlaps = False
                 for _, existing in placed_reed_corners:
                     if rects_overlap(candidate, existing):
@@ -219,10 +222,15 @@ def sector_place(
                 if overlaps:
                     continue
 
-                # Check lever clears button holes (not reed plates!)
+                # Check lever clears button holes
                 if not _lever_clears_buttons(
                     (bx, by), (px, py), button_circles, idx, lever_hw,
                 ):
+                    continue
+
+                # Score: lever consistency + compactness
+                score = abs(lever_len - target_lever_length) + r * 0.1
+                if score >= best_score:
                     continue
 
                 best_score = score
@@ -247,13 +255,16 @@ def sector_place(
                     if lever_len < min_lever_length:
                         continue
 
-                    score = abs(lever_len - target_lever_length)
-                    if score >= best_score:
-                        continue
-
                     candidate = rect_corners_buffered(
                         cx, cy, spec.length, spec.width, phi, clearance,
                     )
+                    if not rect_in_hexagon(candidate, hex_af):
+                        continue
+
+                    score = abs(lever_len - target_lever_length) + r * 0.1
+                    if score >= best_score:
+                        continue
+
                     if any(rects_overlap(candidate, ec) for _, ec in placed_reed_corners):
                         continue
                     if not _lever_clears_buttons(
@@ -267,9 +278,27 @@ def sector_place(
             if best_plate is not None:
                 tag = "wide"
             else:
-                theta = base_theta
-                best_plate = ReedPlate(spec=spec, r=r_max, theta=theta, phi=theta + math.pi)
-                tag = "FALLBACK"
+                # Last resort: find any position inside hex that doesn't overlap
+                for r_fb in radii:
+                    for theta_fb in np.linspace(0, 2 * math.pi, 72, endpoint=False):
+                        cx_fb = r_fb * math.cos(theta_fb)
+                        cy_fb = r_fb * math.sin(theta_fb)
+                        phi_fb = math.atan2(by - cy_fb, bx - cx_fb)
+                        cand = rect_corners_buffered(cx_fb, cy_fb, spec.length, spec.width, phi_fb, clearance)
+                        if not rect_in_hexagon(cand, hex_af):
+                            continue
+                        if any(rects_overlap(cand, ec) for _, ec in placed_reed_corners):
+                            continue
+                        best_plate = ReedPlate(spec=spec, r=r_fb, theta=theta_fb, phi=phi_fb)
+                        break
+                    if best_plate is not None:
+                        break
+                if best_plate is not None:
+                    tag = "fallback"
+                else:
+                    theta = base_theta
+                    best_plate = ReedPlate(spec=spec, r=r_max, theta=theta, phi=theta + math.pi)
+                    tag = "OVERFLOW"
                 infeasible_notes.append(spec.note)
         else:
             tag = "OK"

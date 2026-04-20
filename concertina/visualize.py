@@ -104,6 +104,16 @@ def plot_layout(
         hx, hy = hull.exterior.xy
         ax.plot(hx, hy, "--", color="gray", linewidth=1, alpha=0.5, label="Convex hull")
 
+    # --- Draw hex boundary ---
+    if config and hasattr(config, "hex_boundary"):
+        from concertina.geometry import hexagon_corners
+        hex_af = config.hex_boundary.across_flats - 2 * config.hex_boundary.wall_thickness
+        hc = hexagon_corners(hex_af)
+        # Close the hexagon
+        hx = list(hc[:, 0]) + [hc[0, 0]]
+        hy = list(hc[:, 1]) + [hc[0, 1]]
+        ax.plot(hx, hy, "-", color="#AA4444", linewidth=1.5, alpha=0.6, label="Reed pan boundary")
+
     # --- Draw lever paths (Phase 5+) ---
     if lever_paths:
         for lp in lever_paths:

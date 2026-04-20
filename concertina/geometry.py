@@ -346,6 +346,63 @@ def lever_obstacle_corners(
     ])
 
 
+def point_in_hexagon(
+    px: float, py: float,
+    across_flats: float,
+    center: tuple[float, float] = (0.0, 0.0),
+) -> bool:
+    """Test if a point is inside a regular hexagon (flat-top orientation).
+
+    The hexagon has flat sides at top and bottom.
+
+    Args:
+        px, py: Point to test.
+        across_flats: Distance between parallel flat sides.
+        center: Center of the hexagon.
+    """
+    # Shift to hexagon-centered coords
+    x = abs(px - center[0])
+    y = abs(py - center[1])
+    # Flat-top hexagon: the constraint is max(x, x/2 + y*sqrt(3)/2) <= r
+    r = across_flats / 2
+    # For a flat-top hex with inradius r:
+    # |y| <= r  AND  |y| + |x| * sqrt(3) <= 2*r
+    if y > r:
+        return False
+    if y + x * math.sqrt(3) > 2 * r:
+        return False
+    return True
+
+
+def rect_in_hexagon(
+    corners: np.ndarray,
+    across_flats: float,
+    center: tuple[float, float] = (0.0, 0.0),
+) -> bool:
+    """Test if all 4 corners of a rectangle are inside the hexagon."""
+    for i in range(4):
+        if not point_in_hexagon(corners[i, 0], corners[i, 1], across_flats, center):
+            return False
+    return True
+
+
+def hexagon_corners(
+    across_flats: float,
+    center: tuple[float, float] = (0.0, 0.0),
+) -> np.ndarray:
+    """Return the 6 corners of a flat-top regular hexagon.
+
+    Returns (6, 2) array.
+    """
+    r = across_flats / 2 / math.cos(math.pi / 6)  # circumradius
+    corners = np.zeros((6, 2))
+    for i in range(6):
+        angle = math.pi / 6 + i * math.pi / 3  # flat-top: start at 30°
+        corners[i, 0] = center[0] + r * math.cos(angle)
+        corners[i, 1] = center[1] + r * math.sin(angle)
+    return corners
+
+
 def pallet_position(
     cx: float, cy: float,
     length: float,
