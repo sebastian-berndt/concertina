@@ -349,11 +349,18 @@ Phases 1-8 are implemented with 58 passing tests. All modules exist and work end
 
 ## What to Do Next
 
-### Priority 1: Remaining 5 infeasible levers
-LH has 2 (B3, C4), RH has 3 (B4, D5, E5) infeasible. These are interior buttons whose levers must cross through the dense button grid and can't find a path within the 30° bend limit. Options:
-- Try different sector assignments or routing orders
-- Widen angular search for specific problem notes
-- Accept that a few may need manual adjustment
+### Priority 1: Reed packing algorithm
+The biggest remaining challenge. Current greedy sector placer gets LH 17/23, RH 16/29 in the 200mm hex. Need better packing to fit all reeds inside the boundary.
+
+Approaches tried and failed:
+- Force-directed simulation: oscillates, never settles
+- L-BFGS-B smooth optimization: stuck in local minima (non-convex problem)
+
+Approaches to try next:
+- **Simulated annealing** with the smooth objective (handles non-convex landscapes)
+- **Two-ring layout**: bass reeds in outer ring, treble in inner ring, pre-defined structure
+- **Jigsaw approach**: pre-define slot positions on the hex, assign reeds to slots
+- Better greedy with **backtracking**: if a placement blocks future reeds, undo and retry
 
 ### Priority 2: Build123d CAD export
 Generate 3D parts from the 2D layout:
@@ -363,7 +370,7 @@ Generate 3D parts from the 2D layout:
 - STEP file export for manufacturing
 
 ### Priority 3: Optional DE polish
-Use the sector placement as `x0` for a short DE run to fine-tune reed positions. The fast numpy cost function (`cost_fast.py`) makes this feasible in minutes.
+Use the sector placement as `x0` for a short DE run to fine-tune reed positions.
 
 ## Completed Milestones
 
@@ -378,7 +385,11 @@ Use the sector placement as `x0` for a short DE run to fine-tune reed positions.
 | 2026-04-20 | Correct Beaumont notes | 23 LH + 29 RH verified against chart |
 | 2026-04-20 | Angle-limited router | Max 2 bends, 30° each |
 | 2026-04-20 | Correct obstacle model | Levers vs buttons+levers, not reed plates |
-| 2026-04-20 | Current best | LH 21/23, RH 26/29 |
+| 2026-04-20 | Current best (no hex) | LH 21/23, RH 26/29 |
+| 2026-04-20 | Plate rotation search | Tangential packing, 7 phi angles per position |
+| 2026-04-20 | Hex boundary 200mm | Hard constraint, all plates must fit inside |
+| 2026-04-20 | Force-directed / L-BFGS-B | Attempted, doesn't converge (non-convex) |
+| 2026-04-20 | Current best (200mm hex) | LH 17/23, RH 16/29 — packing needs work |
 
 ## Future: Build123d Integration
 

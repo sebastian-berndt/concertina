@@ -189,15 +189,26 @@ pytest tests/ -v
 
 ## Current Results
 
+**Without hex boundary** (unconstrained reed pan size):
+
 | Side | Keys | Feasible | Straight | Dogleg | Time |
 |------|------|----------|----------|--------|------|
 | LH | 23 | 21/23 | 20 | 1 | ~6s |
 | RH | 29 | 26/29 | 22 | 4 | ~6s |
 
+**With 200mm hex boundary** (default, ~7.9" across flats):
+
+| Side | Keys | Feasible | Straight | Dogleg | Time |
+|------|------|----------|----------|--------|------|
+| LH | 23 | 17/23 | 16 | 1 | ~3s |
+| RH | 29 | 16/29 | 11 | 5 | ~3s |
+
 73 tests passing. All geometry hot paths use numpy (no shapely).
+
+The gap between unconstrained and hex-constrained results shows the reed packing algorithm needs improvement. The greedy sector placer can't optimally pack rectangular plates into a hexagon — this is the main open problem.
 
 ## Next Steps
 
-1. Improve routing for the remaining 5 infeasible levers (interior buttons in dense grid)
+1. **Better reed packing** — simulated annealing, two-ring layout, or jigsaw slot approach to fit all reeds inside the 200mm hex
 2. Build123d integration for 3D CAD export (STEP files for laser cutting)
 3. Optional DE polish stage using sector placement as starting point
