@@ -1,7 +1,9 @@
 """Lever routing from buttons to pallets.
 
-v1: Try straight line first, then single-bend dogleg.
-v2: Multi-bend dogleg via visibility graph + Dijkstra.
+Physical constraints for laser-cut levers:
+- Maximum 2 bends (3 segments). A flat piece of metal can't zigzag.
+- Maximum bend angle of 30° per bend. Sharp turns weaken the lever.
+- Prefer straight > 1-bend > 2-bend.
 
 Hot-path checks use numpy geometry (geometry.py). Shapely is only used
 for the LineString in LeverPath (needed by visualize.py for plotting).
@@ -9,7 +11,6 @@ for the LineString in LeverPath (needed by visualize.py for plotting).
 
 from __future__ import annotations
 
-import heapq
 import math
 from dataclasses import dataclass
 
@@ -23,6 +24,9 @@ from concertina.geometry import (
 )
 from concertina.reed_specs import ReedPlate
 
+# Maximum bend angle in radians (30°)
+MAX_BEND_ANGLE = math.radians(30)
+
 
 @dataclass
 class LeverPath:
@@ -32,7 +36,7 @@ class LeverPath:
     pallet_pos: tuple[float, float]
     pivot_pos: tuple[float, float]
     path: LineString               # centerline (shapely, for visualization only)
-    segments: int                  # 1 = straight, 2+ = dogleg
+    segments: int                  # 1 = straight, 2 = single bend, 3 = double bend
     total_length: float            # mm
     actual_ratio: float            # pallet-side / button-side length
     is_feasible: bool              # no hard-constraint violations
@@ -40,6 +44,13 @@ class LeverPath:
 
 def _seg_length(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.sqrt((b[0] - a[0])**2 + (b[1] - a[1])**2)
+
+
+def _polyline_length(points: list[tuple[float, float]]) -> float:
+    total = 0.0
+    for i in range(len(points) - 1):
+        total += _seg_length(points[i], points[i + 1])
+    return total
 
 
 def _interpolate_along_segments(
@@ -61,33 +72,73 @@ def _interpolate_along_segments(
     return points[-1]
 
 
-def _polyline_length(points: list[tuple[float, float]]) -> float:
-    total = 0.0
-    for i in range(len(points) - 1):
-        total += _seg_length(points[i], points[i + 1])
-    return total
+def _angle_between_segments(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+) -> float:
+    """Angle of the bend at point b, between segments a→b and b→c.
+
+    Returns the deviation from straight (0 = straight, pi = U-turn).
+    """
+    dx1 = b[0] - a[0]
+    dy1 = b[1] - a[1]
+    dx2 = c[0] - b[0]
+    dy2 = c[1] - b[1]
+
+    len1 = math.sqrt(dx1*dx1 + dy1*dy1)
+    len2 = math.sqrt(dx2*dx2 + dy2*dy2)
+    if len1 < 1e-10 or len2 < 1e-10:
+        return 0.0
+
+    # Dot product gives cos of angle between directions
+    cos_angle = (dx1*dx2 + dy1*dy2) / (len1 * len2)
+    cos_angle = max(-1.0, min(1.0, cos_angle))
+
+    # Deviation from straight: 0 means straight, pi means U-turn
+    return math.acos(cos_angle)
+
+
+def _check_bend_angles(
+    points: list[tuple[float, float]],
+    max_angle: float,
+) -> bool:
+    """Check that all bends in a polyline are within the angle limit.
+
+    Returns True if all bends are <= max_angle deviation from straight.
+    """
+    for i in range(1, len(points) - 1):
+        deviation = math.pi - _angle_between_segments(
+            points[i - 1], points[i], points[i + 1],
+        )
+        if deviation > max_angle:
+            return False
+    return True
 
 
 class LeverRouter:
     """Routes levers from buttons to pallets, avoiding obstacles.
 
-    Uses numpy geometry for all collision checks. Shapely is only used
-    to construct the final LineString for visualization.
-
-    Routing obstacles are reed plates and pivot posts only -- NOT buttons.
-    Levers pass through slots under the action board.
+    Physical constraints:
+    - Max 2 bends (3 segments)
+    - Max 30° bend angle per bend
+    - Levers pass under buttons (only reed plates are obstacles)
     """
 
     def __init__(
         self,
         reed_plates: list[ReedPlate],
         config: ConcertinaConfig | None = None,
+        max_bends: int = 2,
+        max_bend_angle: float = MAX_BEND_ANGLE,
     ):
         self.config = config or ConcertinaConfig.defaults()
         self._lever_hw = self.config.instrument.lever_width_min / 2
         self._clearance = self.config.clearance.static_floor
+        self._max_bends = max_bends
+        self._max_bend_angle = max_bend_angle
 
-        # Pre-compute buffered corners for all reed plates (routing obstacles)
+        # Pre-compute buffered corners for all reed plates
         self._reed_corners: list[np.ndarray] = []
         for plate in reed_plates:
             cx, cy = plate.center
@@ -106,36 +157,29 @@ class LeverRouter:
     ) -> LeverPath:
         """Find a lever path from button to pallet.
 
-        Args:
-            button_pos: (x, y) of the button center.
-            pallet_pos: (x, y) of the pallet hole.
-            target_ratio: Desired leverage ratio.
-            lever_index: Index of this lever's reed (excluded from obstacles).
-
-        Returns:
-            LeverPath with the best route found.
+        Tries in order: straight → single bend → double bend.
+        All bends must be ≤ max_bend_angle.
         """
-        # Obstacles = all reed plates except this lever's own
         obstacles = [c for i, c in enumerate(self._reed_corners) if i != lever_index]
 
-        # Try straight line first
+        # 1. Try straight
         if self._is_clear(button_pos, pallet_pos, obstacles):
-            points = [button_pos, pallet_pos]
-            return self._build_path(points, target_ratio, feasible=True)
+            return self._build_path([button_pos, pallet_pos], target_ratio, feasible=True)
 
-        # Try single dogleg
-        dogleg = self._try_single_dogleg(button_pos, pallet_pos, obstacles)
-        if dogleg is not None:
-            return self._build_path(dogleg, target_ratio, feasible=True)
+        # 2. Try single bend (2 segments)
+        if self._max_bends >= 1:
+            single = self._try_dogleg(button_pos, pallet_pos, obstacles, max_waypoints=1)
+            if single is not None:
+                return self._build_path(single, target_ratio, feasible=True)
 
-        # v2: Try multi-bend dogleg via visibility graph
-        multi = self._try_visibility_graph(button_pos, pallet_pos, obstacles)
-        if multi is not None:
-            return self._build_path(multi, target_ratio, feasible=True)
+        # 3. Try double bend (3 segments)
+        if self._max_bends >= 2:
+            double = self._try_dogleg(button_pos, pallet_pos, obstacles, max_waypoints=2)
+            if double is not None:
+                return self._build_path(double, target_ratio, feasible=True)
 
-        # Infeasible: return straight line for visualization
-        points = [button_pos, pallet_pos]
-        return self._build_path(points, target_ratio, feasible=False)
+        # Infeasible
+        return self._build_path([button_pos, pallet_pos], target_ratio, feasible=False)
 
     def _is_clear(
         self,
@@ -150,18 +194,20 @@ class LeverRouter:
                 return False
         return True
 
-    def _try_single_dogleg(
+    def _try_dogleg(
         self,
         button_pos: tuple[float, float],
         pallet_pos: tuple[float, float],
         obstacles: list[np.ndarray],
+        max_waypoints: int,
     ) -> list[tuple[float, float]] | None:
-        """Try routing around blocking obstacles with a single bend.
+        """Try routing with up to max_waypoints bend points.
 
-        For each blocking obstacle, generate waypoints around it and
-        test 2-segment paths.
+        For single bend: try waypoints around each blocking obstacle.
+        For double bend: try pairs of waypoints from different obstacles.
+        All bends must satisfy the angle constraint.
         """
-        # Find which obstacles block the straight path
+        # Generate candidate waypoints from blocking obstacles
         blocking = []
         for corners in obstacles:
             dist = segment_to_rect_dist(button_pos, pallet_pos, corners)
@@ -171,22 +217,71 @@ class LeverRouter:
         if not blocking:
             return [button_pos, pallet_pos]
 
+        # Generate waypoints around all blocking obstacles
+        all_waypoints = []
+        for corners in blocking:
+            all_waypoints.extend(self._waypoints_around(button_pos, pallet_pos, corners))
+
         best_path = None
         best_length = float("inf")
 
-        for corners in blocking:
-            waypoints = self._waypoints_around(button_pos, pallet_pos, corners)
-            for wp in waypoints:
-                # Check both segments clear ALL obstacles
-                if (self._is_clear(button_pos, wp, obstacles) and
-                        self._is_clear(wp, pallet_pos, obstacles)):
-                    path = [button_pos, wp, pallet_pos]
+        if max_waypoints == 1:
+            # Single bend: button → wp → pallet
+            for wp in all_waypoints:
+                path = [button_pos, wp, pallet_pos]
+                if not _check_bend_angles(path, self._max_bend_angle):
+                    continue
+                if not self._all_segments_clear(path, obstacles):
+                    continue
+                length = _polyline_length(path)
+                if length < best_length:
+                    best_length = length
+                    best_path = path
+
+        elif max_waypoints == 2:
+            # Double bend: button → wp1 → wp2 → pallet
+            # Try pairs of waypoints (from same or different obstacles)
+            for i, wp1 in enumerate(all_waypoints):
+                # Quick check: is button→wp1 clear?
+                if not self._is_clear(button_pos, wp1, obstacles):
+                    continue
+                for wp2 in all_waypoints[i + 1:]:
+                    # Quick check: is wp2→pallet clear?
+                    if not self._is_clear(wp2, pallet_pos, obstacles):
+                        continue
+                    path = [button_pos, wp1, wp2, pallet_pos]
+                    if not _check_bend_angles(path, self._max_bend_angle):
+                        continue
+                    if not self._all_segments_clear(path, obstacles):
+                        continue
                     length = _polyline_length(path)
                     if length < best_length:
                         best_length = length
                         best_path = path
 
+                    # Also try reversed order
+                    path_rev = [button_pos, wp2, wp1, pallet_pos]
+                    if not _check_bend_angles(path_rev, self._max_bend_angle):
+                        continue
+                    if not self._all_segments_clear(path_rev, obstacles):
+                        continue
+                    length_rev = _polyline_length(path_rev)
+                    if length_rev < best_length:
+                        best_length = length_rev
+                        best_path = path_rev
+
         return best_path
+
+    def _all_segments_clear(
+        self,
+        points: list[tuple[float, float]],
+        obstacles: list[np.ndarray],
+    ) -> bool:
+        """Check that every segment in a polyline clears all obstacles."""
+        for i in range(len(points) - 1):
+            if not self._is_clear(points[i], points[i + 1], obstacles):
+                return False
+        return True
 
     def _waypoints_around(
         self,
@@ -194,33 +289,32 @@ class LeverRouter:
         end: tuple[float, float],
         corners: np.ndarray,
     ) -> list[tuple[float, float]]:
-        """Generate candidate waypoints around a blocking rectangle."""
-        # Centroid of the rectangle
+        """Generate candidate waypoints around a blocking rectangle.
+
+        Uses offset corner points and perpendicular offsets.
+        """
         cx = float(corners[:, 0].mean())
         cy = float(corners[:, 1].mean())
 
-        # Direction from start to end
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        length = math.sqrt(dx * dx + dy * dy)
-        if length < 1e-6:
-            return []
-
-        # Half-diagonal of the rectangle as obstacle radius
         half_diag = max(
             math.sqrt((corners[i, 0] - cx)**2 + (corners[i, 1] - cy)**2)
             for i in range(4)
         )
         offset = half_diag + self._lever_hw * 2 + 1.0
 
-        # Perpendicular offsets
-        nx = -dy / length
-        ny = dx / length
+        # Direction from start to end
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.sqrt(dx * dx + dy * dy)
 
-        waypoints = [
-            (cx + nx * offset, cy + ny * offset),
-            (cx - nx * offset, cy - ny * offset),
-        ]
+        waypoints = []
+
+        # Perpendicular offsets (both sides)
+        if length > 1e-6:
+            nx = -dy / length
+            ny = dx / length
+            waypoints.append((cx + nx * offset, cy + ny * offset))
+            waypoints.append((cx - nx * offset, cy - ny * offset))
 
         # Corner-based offsets (8 directions)
         for angle_deg in range(0, 360, 45):
@@ -232,90 +326,6 @@ class LeverRouter:
 
         return waypoints
 
-    def _try_visibility_graph(
-        self,
-        button_pos: tuple[float, float],
-        pallet_pos: tuple[float, float],
-        obstacles: list[np.ndarray],
-    ) -> list[tuple[float, float]] | None:
-        """v2: Route around multiple obstacles using visibility graph + Dijkstra.
-
-        Generates waypoints at offset corners of all obstacle rectangles,
-        builds a graph of mutually visible waypoints, and finds the shortest
-        clear path from button to pallet.
-        """
-        # Generate waypoints: offset corners of every obstacle
-        waypoints: list[tuple[float, float]] = []
-        offset = self._lever_hw + 1.5  # clearance from obstacle edges
-
-        for corners in obstacles:
-            cx = float(corners[:, 0].mean())
-            cy = float(corners[:, 1].mean())
-
-            for ci in range(4):
-                # Push each corner outward from the rectangle center
-                px, py = float(corners[ci, 0]), float(corners[ci, 1])
-                dx = px - cx
-                dy = py - cy
-                d = math.sqrt(dx * dx + dy * dy)
-                if d < 1e-6:
-                    continue
-                wp = (px + dx / d * offset, py + dy / d * offset)
-                waypoints.append(wp)
-
-        if not waypoints:
-            return None
-
-        # All nodes: start + waypoints + end
-        nodes = [button_pos] + waypoints + [pallet_pos]
-        n = len(nodes)
-
-        # Build adjacency: edge exists if the segment between two nodes is clear
-        # Use Dijkstra with edge weight = segment length
-        adj: dict[int, list[tuple[int, float]]] = {i: [] for i in range(n)}
-
-        for i in range(n):
-            for j in range(i + 1, n):
-                if self._is_clear(nodes[i], nodes[j], obstacles):
-                    dist = _seg_length(nodes[i], nodes[j])
-                    adj[i].append((j, dist))
-                    adj[j].append((i, dist))
-
-        # Dijkstra from node 0 (button) to node n-1 (pallet)
-        start_idx = 0
-        end_idx = n - 1
-
-        dist_to = [float("inf")] * n
-        dist_to[start_idx] = 0.0
-        prev = [-1] * n
-        heap = [(0.0, start_idx)]
-
-        while heap:
-            d, u = heapq.heappop(heap)
-            if d > dist_to[u]:
-                continue
-            if u == end_idx:
-                break
-            for v, w in adj[u]:
-                nd = d + w
-                if nd < dist_to[v]:
-                    dist_to[v] = nd
-                    prev[v] = u
-                    heapq.heappush(heap, (nd, v))
-
-        if dist_to[end_idx] == float("inf"):
-            return None  # no path found
-
-        # Reconstruct path
-        path = []
-        cur = end_idx
-        while cur != -1:
-            path.append(nodes[cur])
-            cur = prev[cur]
-        path.reverse()
-
-        return path
-
     def _build_path(
         self,
         points: list[tuple[float, float]],
@@ -325,15 +335,12 @@ class LeverRouter:
         """Construct a LeverPath from a list of waypoints."""
         total_length = _polyline_length(points)
 
-        # Check min lever length
         if total_length < self.config.instrument.min_lever_length:
             feasible = False
 
-        # Compute pivot position
         pivot_distance = total_length / (target_ratio + 1.0)
         pivot_pos = _interpolate_along_segments(points, pivot_distance)
 
-        # Compute actual ratio
         btn_to_pivot = pivot_distance
         pivot_to_pallet = total_length - pivot_distance
         if btn_to_pivot < 1e-6:
@@ -341,7 +348,6 @@ class LeverRouter:
         else:
             actual_ratio = pivot_to_pallet / btn_to_pivot
 
-        # Build shapely LineString for visualization only
         path = LineString(points)
 
         return LeverPath(
@@ -365,15 +371,11 @@ def route_all_levers(
 ) -> list[LeverPath]:
     """Route all levers for a complete layout.
 
-    Uses numpy geometry for all routing checks. The obstacle_field
-    parameter is accepted for backwards compatibility but ignored --
-    the router builds its own obstacle set from reed_plates directly.
-
     Args:
         layout: HaydenLayout with button positions.
         reed_plates: Positioned ReedPlate objects.
         reed_specs: ReedSpec objects (for target ratios).
-        obstacle_field: Ignored (backwards compat). Pass None.
+        obstacle_field: Ignored (backwards compat).
         config: Configuration.
 
     Returns:
