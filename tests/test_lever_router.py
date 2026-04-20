@@ -14,7 +14,8 @@ def _make_router():
     layout = make_mini_layout()
     reeds = make_mini_reeds(layout)
     plates = make_mini_good_placement(reeds)
-    router = LeverRouter(plates)
+    buttons = sorted(layout.get_all_enabled(), key=lambda b: b.midi)
+    router = LeverRouter(buttons, plates)
     return router, layout, reeds, plates
 
 
@@ -41,7 +42,6 @@ def test_pivot_at_correct_ratio():
         target_ratio=2.0,
         lever_index=0,
     )
-    # For ratio 2.0, pivot at 1/3 of 90 = 30mm from button
     expected_pivot_y = -30.0
     assert abs(path.pivot_pos[1] - expected_pivot_y) < 0.5
     assert abs(path.actual_ratio - 2.0) < 0.05
@@ -78,7 +78,6 @@ def test_all_levers_have_positive_length():
 
 
 def test_lever_path_dataclass():
-    """LeverPath should have all expected fields."""
     path = LeverPath(
         button_pos=(0, 0),
         pallet_pos=(0, -60),
@@ -95,18 +94,18 @@ def test_lever_path_dataclass():
 
 
 def test_min_lever_length_constraint():
-    """Levers shorter than min_lever_length should be marked infeasible."""
     config = ConcertinaConfig.defaults()
-    config.instrument.min_lever_length = 100.0  # set very high
+    config.instrument.min_lever_length = 100.0
 
     layout = make_mini_layout()
     reeds = make_mini_reeds(layout)
     plates = make_mini_good_placement(reeds)
-    router = LeverRouter(plates, config)
+    buttons = sorted(layout.get_all_enabled(), key=lambda b: b.midi)
+    router = LeverRouter(buttons, plates, config)
 
     path = router.route(
         button_pos=(0, 0),
-        pallet_pos=(0, -50),  # only 50mm, below 100mm threshold
+        pallet_pos=(0, -50),
         target_ratio=2.0,
         lever_index=0,
     )
