@@ -349,25 +349,146 @@ Phases 1-8 are implemented with 58 passing tests. All modules exist and work end
 
 ## What to Do Next
 
-### Priority 1: Reed packing algorithm
-The biggest remaining challenge. Current greedy sector placer gets LH 17/23, RH 16/29 in the 200mm hex. Need better packing to fit all reeds inside the boundary.
+### Priority 1: Reed Banks
 
-Approaches tried and failed:
-- Force-directed simulation: oscillates, never settles
-- L-BFGS-B smooth optimization: stuck in local minima (non-convex problem)
+Replace individual reed plates with reed banks (multiple reeds per block). This is how real hybrid concertinas (Elise, etc.) work and dramatically simplifies packing.
 
-Approaches to try next:
-- **Simulated annealing** with the smooth objective (handles non-convex landscapes)
-- **Two-ring layout**: bass reeds in outer ring, treble in inner ring, pre-defined structure
-- **Jigsaw approach**: pre-define slot positions on the hex, assign reeds to slots
-- Better greedy with **backtracking**: if a placement blocks future reeds, undo and retry
+#### The Physical Reality
+
+```
+  Individual plates (current):     Reed bank:
+  ┌──┐ ┌──┐ ┌──┐ ┌──┐             ┌──────────────────────┐
+  │R1│ │R2│ │R3│ │R4│             │ R1 │ R2 │ R3 │ R4   │
+  └──┘ └──┘ └──┘ └──┘             └──────────────────────┘
+  29 objects to pack               4-6 banks to pack
+```
+
+An accordion reed bank is a long rectangular block with multiple reed slots cut into it. Reeds are arranged by pitch (low to high along the bank). Each slot has its own pallet hole. The bank mounts as a single unit onto the reed pan.
+
+#### 3D Clearance Problem
+
+When the bellows closes, the two reed pans face each other with limited vertical clearance:
+
+```
+  Side view (bellows closed):
+  ┌──────── Action Board LH ────────┐
+  │  buttons  │  levers  │          │
+  ├───────────┴──────────┴──────────┤
+  │         Reed Pan LH             │
+  │  ┌─flat─┐  ┌─stand─┐  ┌─flat─┐ │  ← reed banks
+  │  └──────┘  │  ing  │  └──────┘ │
+  │            └───────┘            │
+  ╞═══════ bellows fold ════════════╡  ← minimum clearance here
+  │            ┌───────┐            │
+  │  ┌─flat─┐  │  ing  │  ┌─flat─┐ │
+  │  └──────┘  │  stand│  └──────┘ │
+  │         Reed Pan RH             │
+  ├───────────┬──────────┬──────────┤
+  │  buttons  │  levers  │          │
+  └──────── Action Board RH ────────┘
+```
+
+**Key constraint:** Reed banks can be oriented two ways:
+- **Flat (lying down):** Low profile, fits near the edges where clearance is tight. But takes more surface area.
+- **Standing (on edge):** Compact surface footprint, but tall. Only fits in the CENTER of the reed pan where there's enough vertical clearance between the two sides.
+
+**The center zone** (roughly inner 60% of the hex) has enough depth for standing banks. The **edge zone** (outer 40%) is too shallow — only flat reeds fit there.
+
+#### Reed Chamber Sizing
+
+Each reed slot needs an air chamber around it. Chambers vary in size:
+- Bass reeds: large chamber (more air volume for low frequencies)
+- Treble reeds: small chamber (less air needed)
+
+On a reed bank, the chambers are built into the bank or into the reed pan walls around it. The bank width is determined by the widest reed slot on it. This means:
+
+**Risk: Mixed banks waste space.** A bank with one bass reed and five treble reeds is as wide as the bass reed for its entire length. Better to group similar-sized reeds together.
+
+#### Design Decisions
+
+1. **How many banks per side?**
+   - Elise uses 2 banks per side (simple but large)
+   - Beaumont-class could use 3-5 banks per side
+   - More banks = more flexible placement but more wood walls
+
+2. **Reed grouping strategy:**
+   - **By pitch range:** Bank 1 = bass, Bank 2 = mid, Bank 3 = treble. Minimizes wasted space from mixed sizes.
+   - **By row:** Group reeds whose buttons are in the same Hayden row. Keeps lever paths parallel.
+   - **By proximity:** Group reeds whose buttons are close together. Minimizes lever length variance.
+
+3. **Bank orientation:**
+   - Standing banks in the center (compact footprint, use the vertical space)
+   - Flat banks near the edges (low profile, fit under the bellows)
+   - This is a hybrid approach matching what real makers do
+
+4. **Pallet position within a bank:**
+   - Each reed on the bank has its own pallet hole at one end of its slot
+   - The pallet holes are spaced along the bank's long edge
+   - The lever must reach the specific pallet hole, not just the bank center
+
+#### Implementation Plan
+
+**Phase 1: Data model**
+
+```python
+@dataclass
+class ReedBank:
+    """A group of reeds mounted on a single block."""
+    reeds: list[ReedSpec]        # reeds on this bank, sorted by pitch
+    orientation: str             # "flat" or "standing"
+    
+    @property
+    def length(self) -> float:
+        """Total length = sum of reed lengths + walls between."""
+        return sum(r.length for r in self.reeds) + wall * (len(self.reeds) + 1)
+    
+    @property 
+    def width(self) -> float:
+        """Width = widest reed + chamber walls."""
+        return max(r.width for r in self.reeds) + 2 * wall
+    
+    @property
+    def height(self) -> float:
+        """Height depends on orientation."""
+        if self.orientation == "standing":
+            return self.width  # width becomes height when on edge
+        return reed_thickness  # ~5-8mm when flat
+
+    def pallet_positions(self, bank_pos, bank_phi) -> list[tuple[float, float]]:
+        """Compute pallet hole positions along the bank edge."""
+        ...
+```
+
+**Phase 2: Bank assignment**
+- Input: list of ReedSpecs (23 or 29)
+- Output: list of ReedBanks (3-5 per side)
+- Strategy: group by pitch range, balancing bank sizes
+- Constraint: standing banks get center-zone reeds, flat banks get edge-zone reeds
+
+**Phase 3: Bank placement**
+- Same sector placer logic but with 3-5 banks instead of 23-29 plates
+- MUCH simpler packing problem
+- Banks have multiple pallet holes, so lever routing is per-pallet, not per-bank
+
+**Phase 4: Lever routing**
+- Each lever goes from its button to the specific pallet hole on its bank
+- The pallet hole position is fixed relative to the bank
+- Same collision model: levers vs buttons, levers vs levers
+
+#### Risks
+
+1. **Bank rigidity reduces flexibility.** Individual plates can each be positioned independently. Banks lock multiple reeds into relative positions. If one reed's ideal position conflicts with the bank layout, ALL reeds on that bank are affected.
+
+2. **Chamber sizing within a bank.** If a bank has reeds of very different sizes, the chambers will be mismatched. Solution: group similar-sized reeds.
+
+3. **Pallet hole spacing is fixed.** Once reeds are grouped on a bank, the pallet hole positions are determined by the reed layout on the bank. Levers must reach these fixed points, which is less flexible than free-floating individual pallets.
+
+4. **Standing bank clearance.** Need to know the exact bellows fold depth to determine the center-zone radius. This is a new config parameter.
+
+5. **Bank width uniformity.** A bank must be as wide as its widest reed. Mixing a 18mm bass reed with 15mm treble reeds wastes 3mm per slot on the treble reeds.
 
 ### Priority 2: Build123d CAD export
-Generate 3D parts from the 2D layout:
-- Action board with button holes and lever slots
-- Reed pan with pallet holes and reed plate mounting slots
-- Individual lever shapes (laser-cut profiles)
-- STEP file export for manufacturing
+Generate 3D parts from the 2D layout.
 
 ### Priority 3: Optional DE polish
 Use the sector placement as `x0` for a short DE run to fine-tune reed positions.
