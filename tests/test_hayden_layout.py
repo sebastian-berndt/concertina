@@ -12,14 +12,14 @@ def test_note_to_midi():
     assert note_to_midi("G2") == 43
 
 
-def test_beaumont_lh_has_26_keys():
+def test_beaumont_lh_has_23_keys():
     layout = HaydenLayout.from_beaumont("LH")
-    assert len(layout.get_all_enabled()) == 26
+    assert len(layout.get_all_enabled()) == 23
 
 
-def test_beaumont_rh_has_26_keys():
+def test_beaumont_rh_has_29_keys():
     layout = HaydenLayout.from_beaumont("RH")
-    assert len(layout.get_all_enabled()) == 26
+    assert len(layout.get_all_enabled()) == 29
 
 
 def test_beaumont_centered():

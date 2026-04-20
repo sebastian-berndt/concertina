@@ -27,7 +27,8 @@ class InstrumentSpec:
     lever_width_max: float = 5.0        # mm (near pivot)
     lever_material: str = "304 SS"      # label only
 
-    keys_per_side: int = 26
+    keys_per_side_lh: int = 23
+    keys_per_side_rh: int = 29
     min_lever_length: float = 30.0      # mm, prevents steep pallet angle
 
     @property

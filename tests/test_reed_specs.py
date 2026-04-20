@@ -12,9 +12,9 @@ def _make_reeds():
     return generate_reed_table(layout.get_all_enabled())
 
 
-def test_generates_26_specs():
+def test_generates_correct_count():
     reeds = _make_reeds()
-    assert len(reeds) == 26
+    assert len(reeds) == 23  # Beaumont LH has 23 keys
 
 
 def test_sorted_by_midi():

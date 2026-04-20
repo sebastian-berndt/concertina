@@ -70,8 +70,8 @@ def test_custom_instrument():
     spec = InstrumentSpec(
         button_diameter=6.5,
         h_pitch=18.5,
-        keys_per_side=17,
+        keys_per_side_lh=17,
     )
     assert spec.button_diameter == 6.5
     assert spec.button_radius == 3.25
-    assert spec.keys_per_side == 17
+    assert spec.keys_per_side_lh == 17

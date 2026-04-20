@@ -15,9 +15,14 @@ from concertina.config import InstrumentSpec
 # Note name to MIDI number mapping (middle C = C4 = 60)
 _NOTE_MIDI = {}
 _NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
+# Enharmonic aliases used in Hayden charts (sharps for black keys)
+_ENHARMONIC = {"D#": "Eb", "G#": "Ab", "A#": "Bb"}
 for _oct in range(0, 9):
     for _i, _name in enumerate(_NOTE_NAMES):
         _NOTE_MIDI[f"{_name}{_oct}"] = 12 + _oct * 12 + _i
+    # Add sharp aliases
+    for _sharp, _flat in _ENHARMONIC.items():
+        _NOTE_MIDI[f"{_sharp}{_oct}"] = _NOTE_MIDI[f"{_flat}{_oct}"]
 
 
 def note_to_midi(note: str) -> int:
@@ -132,30 +137,57 @@ class HaydenLayout:
 
     @classmethod
     def from_beaumont(cls, side: str, instrument: InstrumentSpec | None = None) -> HaydenLayout:
-        """Generate the standard 26-key Beaumont layout for one side.
+        """Generate the Beaumont (R. Morse & Co.) button layout.
 
-        LH = bass/tenor focused, RH = alto/treble focused.
-        The Beaumont uses 6 rows of buttons per side.
+        Hayden Duet pattern: each step right = +2 semitones (whole tone),
+        each row up = +7 semitones (perfect fifth) at the up-right neighbor.
+
+        The Beaumont has 52 keys: 23 LH + 29 RH.
+        Note layout verified against the official R. Morse & Co. Beaumont
+        note chart (c' = middle C = C4).
+
+        LH: 23 keys, Bb2 to B4 (4 rows)
+        RH: 29 keys, C#4 to D6 (6 rows)
         """
         layout = cls(side=side, instrument=instrument)
 
         if side == "LH":
-            # Left Hand (26 Notes) - Bass/Tenor focused
-            # Row index, list of (Note, Column)
-            layout.add_row(-2, [("G2", 0), ("A2", 1), ("B2", 2)])
-            layout.add_row(-1, [("C3", -1), ("D3", 0), ("E3", 1), ("F#3", 2)])
-            layout.add_row(0, [("F3", -2), ("G3", -1), ("A3", 0), ("B3", 1), ("C#4", 2)])
-            layout.add_row(1, [("Bb3", -2), ("C4", -1), ("D4", 0), ("E4", 1), ("F#4", 2)])
-            layout.add_row(2, [("Eb4", -2), ("F4", -1), ("G4", 0), ("A4", 1), ("B4", 2)])
-            layout.add_row(3, [("Ab4", -1), ("Bb4", 0), ("C5", 1), ("D5", 2)])
+            # Left Hand (23 keys) — Bb2 to B4
+            # Row, list of (Note, Column)
+            # Hayden whole-tone rows alternate: Bb-type and Eb-type
+            layout.add_row(0, [
+                ("Bb2", 0), ("C3", 1), ("D3", 2), ("E3", 3), ("F#3", 4), ("G#3", 5),
+            ])
+            layout.add_row(1, [
+                ("Eb3", -1), ("F3", 0), ("G3", 1), ("A3", 2), ("B3", 3), ("C#4", 4),
+            ])
+            layout.add_row(2, [
+                ("Bb3", -1), ("C4", 0), ("D4", 1), ("E4", 2), ("F#4", 3), ("G#4", 4),
+            ])
+            layout.add_row(3, [
+                ("Eb4", -2), ("F4", -1), ("G4", 0), ("A4", 1), ("B4", 2),
+            ])
         elif side == "RH":
-            # Right Hand (26 Notes) - Alto/Treble focused
-            layout.add_row(-2, [("C4", 0), ("D4", 1), ("E4", 2)])
-            layout.add_row(-1, [("F4", -1), ("G4", 0), ("A4", 1), ("B4", 2)])
-            layout.add_row(0, [("Bb4", -2), ("C5", -1), ("D5", 0), ("E5", 1), ("F#5", 2)])
-            layout.add_row(1, [("Eb5", -2), ("F5", -1), ("G5", 0), ("A5", 1), ("B5", 2)])
-            layout.add_row(2, [("Ab5", -2), ("Bb5", -1), ("C6", 0), ("D6", 1), ("E6", 2)])
-            layout.add_row(3, [("F6", -1), ("G6", 0), ("A6", 1), ("B6", 2)])
+            # Right Hand (29 keys) — C#4 to D6
+            # C#4 sits alone at far right of the bottom row
+            layout.add_row(0, [
+                ("C#4", 5),
+            ])
+            layout.add_row(1, [
+                ("Bb3", 0), ("C4", 1), ("D4", 2), ("E4", 3), ("F#4", 4), ("G#4", 5),
+            ])
+            layout.add_row(2, [
+                ("Eb4", -1), ("F4", 0), ("G4", 1), ("A4", 2), ("B4", 3), ("C#5", 4), ("D#5", 5),
+            ])
+            layout.add_row(3, [
+                ("Bb4", -1), ("C5", 0), ("D5", 1), ("E5", 2), ("F#5", 3), ("G#5", 4),
+            ])
+            layout.add_row(4, [
+                ("Eb5", -2), ("F5", -1), ("G5", 0), ("A5", 1), ("B5", 2), ("C#6", 3),
+            ])
+            layout.add_row(5, [
+                ("Bb5", -2), ("C6", -1), ("D6", 0),
+            ])
         else:
             raise ValueError(f"side must be 'LH' or 'RH', got '{side}'")
 
