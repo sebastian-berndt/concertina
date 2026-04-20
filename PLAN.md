@@ -404,27 +404,33 @@ On a reed bank, the chambers are built into the bank or into the reed pan walls 
 
 **Risk: Mixed banks waste space.** A bank with one bass reed and five treble reeds is as wide as the bass reed for its entire length. Better to group similar-sized reeds together.
 
-#### Design Decisions
+#### Design Decisions (Settled)
 
-1. **How many banks per side?**
-   - Elise uses 2 banks per side (simple but large)
-   - Beaumont-class could use 3-5 banks per side
-   - More banks = more flexible placement but more wood walls
+1. **Reed grouping: by Hayden row/column.**
+   Reeds in the same Hayden row share a whole-tone scale and their buttons
+   are in a line. Grouping by row means levers run roughly parallel, which
+   minimizes crossing. Each row becomes one bank (or part of one).
 
-2. **Reed grouping strategy:**
-   - **By pitch range:** Bank 1 = bass, Bank 2 = mid, Bank 3 = treble. Minimizes wasted space from mixed sizes.
-   - **By row:** Group reeds whose buttons are in the same Hayden row. Keeps lever paths parallel.
-   - **By proximity:** Group reeds whose buttons are close together. Minimizes lever length variance.
+2. **Not all reeds on banks.**
+   Large bass reeds stay as individual plates — they're too varied in size
+   and too few to bank efficiently. Mid and treble reeds go on banks.
+   This hybrid approach packs the many small/medium reeds densely while
+   giving the large bass reeds placement flexibility.
 
-3. **Bank orientation:**
-   - Standing banks in the center (compact footprint, use the vertical space)
-   - Flat banks near the edges (low profile, fit under the bellows)
-   - This is a hybrid approach matching what real makers do
+3. **Bank orientation is a clearance decision, not mechanical.**
+   The pallet mechanism is the same for flat and standing. The choice is
+   driven by where the bank sits on the reed pan:
+   - **Center zone:** bellows has clearance → standing banks OK (compact footprint)
+   - **Edge zone:** bellows closes tight → flat or individual only
 
-4. **Pallet position within a bank:**
-   - Each reed on the bank has its own pallet hole at one end of its slot
-   - The pallet holes are spaced along the bank's long edge
-   - The lever must reach the specific pallet hole, not just the bank center
+4. **Bank count is configurable.**
+   Not hardcoded. The solver tries different groupings. Typical: 2-4 banks
+   per side for mid/treble, plus 4-8 individual bass plates.
+
+5. **Pallet position within a bank:**
+   Each reed on the bank has its own pallet hole along the bank's long edge.
+   Pallet spacing is fixed by reed slot sizes. The lever must reach the
+   specific pallet hole for its reed.
 
 #### Implementation Plan
 
@@ -434,58 +440,69 @@ On a reed bank, the chambers are built into the bank or into the reed pan walls 
 @dataclass
 class ReedBank:
     """A group of reeds mounted on a single block."""
-    reeds: list[ReedSpec]        # reeds on this bank, sorted by pitch
-    orientation: str             # "flat" or "standing"
+    reeds: list[ReedSpec]           # reeds on this bank, sorted by pitch
+    orientation: str                # "flat" or "standing"
+    wall_thickness: float = 2.0     # mm between reed slots
     
     @property
     def length(self) -> float:
-        """Total length = sum of reed lengths + walls between."""
-        return sum(r.length for r in self.reeds) + wall * (len(self.reeds) + 1)
+        """Sum of reed slot lengths + walls."""
+        return sum(r.length for r in self.reeds) + self.wall_thickness * (len(self.reeds) + 1)
     
     @property 
     def width(self) -> float:
-        """Width = widest reed + chamber walls."""
-        return max(r.width for r in self.reeds) + 2 * wall
+        """Widest reed + chamber walls."""
+        return max(r.width for r in self.reeds) + 2 * self.wall_thickness
     
     @property
     def height(self) -> float:
-        """Height depends on orientation."""
+        """Standing: width becomes height. Flat: just reed thickness."""
         if self.orientation == "standing":
-            return self.width  # width becomes height when on edge
-        return reed_thickness  # ~5-8mm when flat
+            return self.width
+        return 8.0  # mm, typical flat block thickness
 
-    def pallet_positions(self, bank_pos, bank_phi) -> list[tuple[float, float]]:
-        """Compute pallet hole positions along the bank edge."""
+    def pallet_positions(self, bank_cx, bank_cy, bank_phi) -> list[tuple[float, float]]:
+        """Compute pallet hole (x,y) for each reed along the bank edge."""
         ...
+
+@dataclass  
+class ReedPanLayout:
+    """Mixed layout: banks + individual plates."""
+    banks: list[tuple[ReedBank, float, float, float]]  # (bank, cx, cy, phi)
+    individuals: list[ReedPlate]                        # individual plates
 ```
 
-**Phase 2: Bank assignment**
-- Input: list of ReedSpecs (23 or 29)
-- Output: list of ReedBanks (3-5 per side)
-- Strategy: group by pitch range, balancing bank sizes
-- Constraint: standing banks get center-zone reeds, flat banks get edge-zone reeds
+**Phase 2: Reed assignment**
+- Input: 23 or 29 ReedSpecs
+- Split into bank candidates and individual candidates:
+  - Individual: largest N reeds (bass), configurable threshold
+  - Banks: remaining reeds, grouped by Hayden row
+- Each Hayden row's reeds become one bank (or split into sub-banks if too long)
+- Standing banks for center zone, flat for edge zone
 
-**Phase 3: Bank placement**
-- Same sector placer logic but with 3-5 banks instead of 23-29 plates
-- MUCH simpler packing problem
-- Banks have multiple pallet holes, so lever routing is per-pallet, not per-bank
+**Phase 3: Placement (much simpler packing)**
+- Place individual bass plates first (they need the most space, go at edges)
+- Then place 2-4 banks (much simpler than 20+ individual plates)
+- Banks in center zone can stand (small footprint)
+- Total objects to pack: ~6-10 instead of 23-29
 
 **Phase 4: Lever routing**
 - Each lever goes from its button to the specific pallet hole on its bank
-- The pallet hole position is fixed relative to the bank
+- Pallet positions computed from bank position + reed offset within bank
 - Same collision model: levers vs buttons, levers vs levers
+- The parallel levers from a single bank's row will naturally fan out together
 
 #### Risks
 
-1. **Bank rigidity reduces flexibility.** Individual plates can each be positioned independently. Banks lock multiple reeds into relative positions. If one reed's ideal position conflicts with the bank layout, ALL reeds on that bank are affected.
+1. **Bank rigidity reduces flexibility.** Banks lock multiple reeds into relative positions. Mitigated by keeping large bass reeds as individuals — they need the most placement flexibility.
 
-2. **Chamber sizing within a bank.** If a bank has reeds of very different sizes, the chambers will be mismatched. Solution: group similar-sized reeds.
+2. **Pallet hole spacing is fixed within a bank.** Once reeds are grouped, lever endpoints are determined. Mitigated by grouping Hayden rows — levers from the same row naturally fan out in parallel, so fixed spacing works well.
 
-3. **Pallet hole spacing is fixed.** Once reeds are grouped on a bank, the pallet hole positions are determined by the reed layout on the bank. Levers must reach these fixed points, which is less flexible than free-floating individual pallets.
+3. **Center zone radius needs a new config parameter.** The bellows fold depth determines where standing banks can go. If this is wrong, banks won't fit when the bellows closes. Need `bellows_clearance_radius` in config.
 
-4. **Standing bank clearance.** Need to know the exact bellows fold depth to determine the center-zone radius. This is a new config parameter.
+4. **Bank width = widest reed on it.** Grouping by Hayden row means reeds in a whole-tone scale — their widths are similar but not identical. Waste is small (1-2mm) for row-grouped banks.
 
-5. **Bank width uniformity.** A bank must be as wide as its widest reed. Mixing a 18mm bass reed with 15mm treble reeds wastes 3mm per slot on the treble reeds.
+5. **Splitting rows into sub-banks.** A full Hayden row (6-7 reeds) might produce a bank that's too long for the hex. May need to split rows into 2 sub-banks. The grouping algorithm should handle this.
 
 ### Priority 2: Build123d CAD export
 Generate 3D parts from the 2D layout.
