@@ -69,6 +69,7 @@ def sector_place(
     reed_specs: list[ReedSpec],
     config: ConcertinaConfig | None = None,
     min_lever_length: float = 35.0,
+    target_lever_length: float = 60.0,
     r_range: tuple[float, float] = (40, 130),
     r_step: float = 2.0,
     angular_margin_deg: float = 2.0,
@@ -78,11 +79,11 @@ def sector_place(
 
     Algorithm:
     1. Compute each button's natural outward angle from grid center
-    2. Create 26 angular slots spread around the circle
+    2. Create N angular slots spread around the circle
     3. Assign buttons to slots using linear_sum_assignment (Hungarian algorithm)
        to minimize total angular deviation
-    4. For each button-slot pair, sweep radius to find optimal placement
-       (shortest lever, no overlap with neighbors)
+    4. For each button-slot pair (ordered by size + centrality), sweep radius
+       to find placement closest to target_lever_length with no collisions
 
     Args:
         layout: Button layout.
@@ -150,8 +151,19 @@ def sector_place(
             print(f"  {reed_specs[i].note:4s}: button={btn_deg:7.1f}° → slot={slot_deg:7.1f}° (Δ={diff:5.1f}°)")
 
     # --- Step 4: Place each reed at its assigned angle, sweep radius ---
-    # Process largest reeds first for radius search (they need more space)
-    order = sorted(range(n), key=lambda i: -reed_specs[i].length * reed_specs[i].width)
+    # Placement order: prioritize both large reeds AND central buttons.
+    # Central buttons (close to grid center) have more button-hole obstacles
+    # in their lever path, so they need to be placed early while there's room.
+    btn_distances = [math.sqrt(bx**2 + by**2) for bx, by in btn_xy]
+    max_btn_dist = max(btn_distances) if btn_distances else 1.0
+
+    def _placement_priority(i: int) -> float:
+        reed_area = reed_specs[i].length * reed_specs[i].width
+        centrality = 1.0 - btn_distances[i] / max_btn_dist  # 1.0 = center, 0.0 = edge
+        # Combine: large reeds and central buttons get placed first
+        return -(reed_area / 1000.0 + centrality * 0.5)
+
+    order = sorted(range(n), key=_placement_priority)
 
     placed_reed_corners: list[tuple[int, np.ndarray]] = []  # (index, reed corners)
     plates: list[ReedPlate | None] = [None] * n
@@ -172,7 +184,7 @@ def sector_place(
         base_theta = assigned_angles[idx]
 
         best_plate = None
-        best_lever_len = float("inf")
+        best_score = float("inf")
 
         # Search within the angular margin of the assigned slot
         theta_offsets = np.linspace(-margin, margin, max(1, int(2 * margin / math.radians(1)) + 1))
@@ -189,7 +201,10 @@ def sector_place(
 
                 if lever_len < min_lever_length:
                     continue
-                if lever_len >= best_lever_len:
+
+                # Score: closeness to target lever length (lower = better)
+                score = abs(lever_len - target_lever_length)
+                if score >= best_score:
                     continue
 
                 # Check reed overlap with placed reeds
@@ -210,7 +225,7 @@ def sector_place(
                 ):
                     continue
 
-                best_lever_len = lever_len
+                best_score = score
                 best_plate = ReedPlate(spec=spec, r=r, theta=theta, phi=phi)
 
         if best_plate is None:
@@ -231,7 +246,9 @@ def sector_place(
 
                     if lever_len < min_lever_length:
                         continue
-                    if lever_len >= best_lever_len:
+
+                    score = abs(lever_len - target_lever_length)
+                    if score >= best_score:
                         continue
 
                     candidate = rect_corners_buffered(
@@ -244,7 +261,7 @@ def sector_place(
                     ):
                         continue
 
-                    best_lever_len = lever_len
+                    best_score = score
                     best_plate = ReedPlate(spec=spec, r=r, theta=theta, phi=phi)
 
             if best_plate is not None:
