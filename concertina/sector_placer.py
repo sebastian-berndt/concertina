@@ -27,6 +27,7 @@ from concertina.geometry import (
     rects_overlap,
     segment_to_rect_dist,
     pallet_position,
+    lever_obstacle_corners,
 )
 from concertina.hayden_layout import HaydenLayout
 from concertina.reed_specs import ReedSpec, ReedPlate
@@ -131,7 +132,8 @@ def sector_place(
     # Process largest reeds first for radius search (they need more space)
     order = sorted(range(n), key=lambda i: -reed_specs[i].length * reed_specs[i].width)
 
-    placed_corners: list[tuple[int, np.ndarray]] = []  # (index, corners)
+    placed_reed_corners: list[tuple[int, np.ndarray]] = []  # (index, reed corners)
+    placed_lever_corners: list[np.ndarray] = []  # lever path rectangles
     plates: list[ReedPlate | None] = [None] * n
     feasible_count = 0
     infeasible_notes = []
@@ -166,13 +168,21 @@ def sector_place(
                 if lever_len >= best_lever_len:
                     continue
 
-                # Check overlap with placed reeds
+                # Check reed overlap with placed reeds
                 candidate = rect_corners_buffered(
                     cx, cy, spec.length, spec.width, phi, clearance,
                 )
                 overlaps = False
-                for _, existing in placed_corners:
+                for _, existing in placed_reed_corners:
                     if rects_overlap(candidate, existing):
+                        overlaps = True
+                        break
+                if overlaps:
+                    continue
+
+                # Check reed doesn't overlap placed levers
+                for lc in placed_lever_corners:
+                    if rects_overlap(candidate, lc):
                         overlaps = True
                         break
                 if overlaps:
@@ -180,11 +190,19 @@ def sector_place(
 
                 # Check lever clears other placed reeds
                 lever_clear = True
-                for other_idx, existing in placed_corners:
+                for _, existing in placed_reed_corners:
                     dist = segment_to_rect_dist((bx, by), (px, py), existing)
                     if dist < lever_hw:
                         lever_clear = False
                         break
+
+                # Check lever doesn't cross placed levers
+                if lever_clear:
+                    for lc in placed_lever_corners:
+                        dist = segment_to_rect_dist((bx, by), (px, py), lc)
+                        if dist < lever_hw:
+                            lever_clear = False
+                            break
 
                 if not lever_clear:
                     continue
@@ -216,7 +234,9 @@ def sector_place(
                     candidate = rect_corners_buffered(
                         cx, cy, spec.length, spec.width, phi, clearance,
                     )
-                    if any(rects_overlap(candidate, ec) for _, ec in placed_corners):
+                    if any(rects_overlap(candidate, ec) for _, ec in placed_reed_corners):
+                        continue
+                    if any(rects_overlap(candidate, lc) for lc in placed_lever_corners):
                         continue
 
                     best_lever_len = lever_len
@@ -250,7 +270,13 @@ def sector_place(
         corners = rect_corners_buffered(
             cx, cy, spec.length, spec.width, best_plate.phi, clearance,
         )
-        placed_corners.append((idx, corners))
+        placed_reed_corners.append((idx, corners))
+
+        # Add this lever's physical footprint as an obstacle for future placements
+        if tag in ("OK", "wide"):
+            px, py = pallet_position(cx, cy, spec.length, best_plate.phi)
+            lc = lever_obstacle_corners((bx, by), (px, py), lever_hw + clearance)
+            placed_lever_corners.append(lc)
 
     assignments = [(reed_specs[i].note, float(assigned_angles[i])) for i in range(n)]
 

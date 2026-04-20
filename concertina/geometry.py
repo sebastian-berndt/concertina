@@ -318,6 +318,34 @@ def rect_corners_buffered(
 # Pallet position computation
 # ---------------------------------------------------------------------------
 
+def lever_obstacle_corners(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    half_width: float,
+) -> np.ndarray:
+    """Create a (4, 2) rectangle representing a lever's physical footprint.
+
+    The lever is a line segment from start to end, buffered by half_width
+    on each side. Returns the 4 corners of this rectangle.
+    """
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length = math.sqrt(dx * dx + dy * dy)
+    if length < 1e-10:
+        return rect_corners(start[0], start[1], 0.1, half_width * 2, 0)
+
+    # Unit normal perpendicular to the lever
+    nx = -dy / length * half_width
+    ny = dx / length * half_width
+
+    return np.array([
+        [start[0] + nx, start[1] + ny],
+        [end[0] + nx, end[1] + ny],
+        [end[0] - nx, end[1] - ny],
+        [start[0] - nx, start[1] - ny],
+    ])
+
+
 def pallet_position(
     cx: float, cy: float,
     length: float,

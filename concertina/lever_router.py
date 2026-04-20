@@ -1,7 +1,7 @@
 """Lever routing from buttons to pallets.
 
 v1: Try straight line first, then single-bend dogleg.
-v2 (future): Full visibility graph + Dijkstra for complex routing.
+v2: Multi-bend dogleg via visibility graph + Dijkstra.
 
 Hot-path checks use numpy geometry (geometry.py). Shapely is only used
 for the LineString in LeverPath (needed by visualize.py for plotting).
@@ -9,6 +9,7 @@ for the LineString in LeverPath (needed by visualize.py for plotting).
 
 from __future__ import annotations
 
+import heapq
 import math
 from dataclasses import dataclass
 
@@ -127,6 +128,11 @@ class LeverRouter:
         if dogleg is not None:
             return self._build_path(dogleg, target_ratio, feasible=True)
 
+        # v2: Try multi-bend dogleg via visibility graph
+        multi = self._try_visibility_graph(button_pos, pallet_pos, obstacles)
+        if multi is not None:
+            return self._build_path(multi, target_ratio, feasible=True)
+
         # Infeasible: return straight line for visualization
         points = [button_pos, pallet_pos]
         return self._build_path(points, target_ratio, feasible=False)
@@ -225,6 +231,90 @@ class LeverRouter:
             ))
 
         return waypoints
+
+    def _try_visibility_graph(
+        self,
+        button_pos: tuple[float, float],
+        pallet_pos: tuple[float, float],
+        obstacles: list[np.ndarray],
+    ) -> list[tuple[float, float]] | None:
+        """v2: Route around multiple obstacles using visibility graph + Dijkstra.
+
+        Generates waypoints at offset corners of all obstacle rectangles,
+        builds a graph of mutually visible waypoints, and finds the shortest
+        clear path from button to pallet.
+        """
+        # Generate waypoints: offset corners of every obstacle
+        waypoints: list[tuple[float, float]] = []
+        offset = self._lever_hw + 1.5  # clearance from obstacle edges
+
+        for corners in obstacles:
+            cx = float(corners[:, 0].mean())
+            cy = float(corners[:, 1].mean())
+
+            for ci in range(4):
+                # Push each corner outward from the rectangle center
+                px, py = float(corners[ci, 0]), float(corners[ci, 1])
+                dx = px - cx
+                dy = py - cy
+                d = math.sqrt(dx * dx + dy * dy)
+                if d < 1e-6:
+                    continue
+                wp = (px + dx / d * offset, py + dy / d * offset)
+                waypoints.append(wp)
+
+        if not waypoints:
+            return None
+
+        # All nodes: start + waypoints + end
+        nodes = [button_pos] + waypoints + [pallet_pos]
+        n = len(nodes)
+
+        # Build adjacency: edge exists if the segment between two nodes is clear
+        # Use Dijkstra with edge weight = segment length
+        adj: dict[int, list[tuple[int, float]]] = {i: [] for i in range(n)}
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                if self._is_clear(nodes[i], nodes[j], obstacles):
+                    dist = _seg_length(nodes[i], nodes[j])
+                    adj[i].append((j, dist))
+                    adj[j].append((i, dist))
+
+        # Dijkstra from node 0 (button) to node n-1 (pallet)
+        start_idx = 0
+        end_idx = n - 1
+
+        dist_to = [float("inf")] * n
+        dist_to[start_idx] = 0.0
+        prev = [-1] * n
+        heap = [(0.0, start_idx)]
+
+        while heap:
+            d, u = heapq.heappop(heap)
+            if d > dist_to[u]:
+                continue
+            if u == end_idx:
+                break
+            for v, w in adj[u]:
+                nd = d + w
+                if nd < dist_to[v]:
+                    dist_to[v] = nd
+                    prev[v] = u
+                    heapq.heappush(heap, (nd, v))
+
+        if dist_to[end_idx] == float("inf"):
+            return None  # no path found
+
+        # Reconstruct path
+        path = []
+        cur = end_idx
+        while cur != -1:
+            path.append(nodes[cur])
+            cur = prev[cur]
+        path.reverse()
+
+        return path
 
     def _build_path(
         self,
