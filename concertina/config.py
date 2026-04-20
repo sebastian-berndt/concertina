@@ -115,7 +115,7 @@ class ReedDimensions:
 class HexBoundary:
     """Hexagonal reed pan boundary."""
 
-    across_flats: float = 165.0    # mm (6.5" Beaumont standard)
+    across_flats: float = 200.0    # mm (~7.9", sized for accordion reeds)
     wall_thickness: float = 3.0    # mm, wood wall around the edge
 
     @property
