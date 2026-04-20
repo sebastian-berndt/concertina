@@ -193,48 +193,55 @@ def sector_place(
         # Search within the angular margin of the assigned slot
         theta_offsets = np.linspace(-margin, margin, max(1, int(2 * margin / math.radians(1)) + 1))
 
+        # Phi candidates: radial (point at button), tangential (along perimeter),
+        # and intermediate rotations. Tangential packing is much denser.
+        phi_offsets = np.linspace(-math.pi / 2, math.pi / 2, 7)  # 7 rotations to try
+
         for r in radii:
             for dt in theta_offsets:
                 theta = base_theta + dt
                 cx = r * math.cos(theta)
                 cy = r * math.sin(theta)
-                phi = math.atan2(by - cy, bx - cx)
+                phi_radial = math.atan2(by - cy, bx - cx)
 
-                px, py = pallet_position(cx, cy, spec.length, phi)
-                lever_len = math.sqrt((bx - px)**2 + (by - py)**2)
+                for dphi in phi_offsets:
+                    phi = phi_radial + dphi
 
-                if lever_len < min_lever_length:
-                    continue
+                    px, py = pallet_position(cx, cy, spec.length, phi)
+                    lever_len = math.sqrt((bx - px)**2 + (by - py)**2)
 
-                # Check reed fits inside hex boundary
-                candidate = rect_corners_buffered(
-                    cx, cy, spec.length, spec.width, phi, clearance,
-                )
-                if not rect_in_hexagon(candidate, hex_af):
-                    continue
+                    if lever_len < min_lever_length:
+                        continue
 
-                # Check reed doesn't overlap placed reeds
-                overlaps = False
-                for _, existing in placed_reed_corners:
-                    if rects_overlap(candidate, existing):
-                        overlaps = True
-                        break
-                if overlaps:
-                    continue
+                    # Check reed fits inside hex boundary
+                    candidate = rect_corners_buffered(
+                        cx, cy, spec.length, spec.width, phi, clearance,
+                    )
+                    if not rect_in_hexagon(candidate, hex_af):
+                        continue
 
-                # Check lever clears button holes
-                if not _lever_clears_buttons(
-                    (bx, by), (px, py), button_circles, idx, lever_hw,
-                ):
-                    continue
+                    # Check reed doesn't overlap placed reeds
+                    overlaps = False
+                    for _, existing in placed_reed_corners:
+                        if rects_overlap(candidate, existing):
+                            overlaps = True
+                            break
+                    if overlaps:
+                        continue
 
-                # Score: lever consistency + compactness
-                score = abs(lever_len - target_lever_length) + r * 0.1
-                if score >= best_score:
-                    continue
+                    # Check lever clears button holes
+                    if not _lever_clears_buttons(
+                        (bx, by), (px, py), button_circles, idx, lever_hw,
+                    ):
+                        continue
 
-                best_score = score
-                best_plate = ReedPlate(spec=spec, r=r, theta=theta, phi=phi)
+                    # Score: lever consistency + compactness
+                    score = abs(lever_len - target_lever_length) + r * 0.1
+                    if score >= best_score:
+                        continue
+
+                    best_score = score
+                    best_plate = ReedPlate(spec=spec, r=r, theta=theta, phi=phi)
 
         if best_plate is None:
             # Widen angular search
@@ -247,33 +254,36 @@ def sector_place(
                 for theta in wider_thetas:
                     cx = r * math.cos(theta)
                     cy = r * math.sin(theta)
-                    phi = math.atan2(by - cy, bx - cx)
+                    phi_radial = math.atan2(by - cy, bx - cx)
 
-                    px, py = pallet_position(cx, cy, spec.length, phi)
-                    lever_len = math.sqrt((bx - px)**2 + (by - py)**2)
+                    for dphi in phi_offsets:
+                        phi = phi_radial + dphi
 
-                    if lever_len < min_lever_length:
-                        continue
+                        px, py = pallet_position(cx, cy, spec.length, phi)
+                        lever_len = math.sqrt((bx - px)**2 + (by - py)**2)
 
-                    candidate = rect_corners_buffered(
-                        cx, cy, spec.length, spec.width, phi, clearance,
-                    )
-                    if not rect_in_hexagon(candidate, hex_af):
-                        continue
+                        if lever_len < min_lever_length:
+                            continue
 
-                    score = abs(lever_len - target_lever_length) + r * 0.1
-                    if score >= best_score:
-                        continue
+                        candidate = rect_corners_buffered(
+                            cx, cy, spec.length, spec.width, phi, clearance,
+                        )
+                        if not rect_in_hexagon(candidate, hex_af):
+                            continue
 
-                    if any(rects_overlap(candidate, ec) for _, ec in placed_reed_corners):
-                        continue
-                    if not _lever_clears_buttons(
-                        (bx, by), (px, py), button_circles, idx, lever_hw,
-                    ):
-                        continue
+                        score = abs(lever_len - target_lever_length) + r * 0.1
+                        if score >= best_score:
+                            continue
 
-                    best_score = score
-                    best_plate = ReedPlate(spec=spec, r=r, theta=theta, phi=phi)
+                        if any(rects_overlap(candidate, ec) for _, ec in placed_reed_corners):
+                            continue
+                        if not _lever_clears_buttons(
+                            (bx, by), (px, py), button_circles, idx, lever_hw,
+                        ):
+                            continue
+
+                        best_score = score
+                        best_plate = ReedPlate(spec=spec, r=r, theta=theta, phi=phi)
 
             if best_plate is not None:
                 tag = "wide"
