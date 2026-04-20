@@ -1,37 +1,72 @@
 # Concertina Compiler
 
-A parametric layout solver for Hayden Duet concertinas with accordion reeds. Given a button grid and reed plate dimensions, it computes the optimal reed pan layout where all mechanical levers route from buttons to pallets without collisions.
+A parametric layout solver for Hayden Duet concertinas with accordion reeds. Given a button grid and reed plate dimensions, it computes the optimal action board layout — reed positions, lever paths, and pivot points — where nothing collides.
 
 ## The Problem
 
-A concertina action board is a mechanical puzzle. Each button connects to a reed via a lever that pivots on a post. The lever lifts a pallet (valve) to let air reach the reed. With 26 keys per side, you need 26 levers, 26 pivots, and 26 reed plates all packed into a hexagonal frame — and nothing can touch anything else.
+A concertina has two boards stacked vertically:
 
 ```
-  Button ──── Pivot ──────────── Pallet ──── Reed
-    │          (1/3)              (2/3)        │
-    ▼                                          ▼
-  [Action Board]                          [Reed Pan]
+        ┌─────────────────────────────┐
+        │       ACTION BOARD          │  ← buttons + levers + pivots
+        │  [buttons poke through]     │
+        │  [levers in slots below]    │
+        ├─────────────────────────────┤
+        │        REED PAN             │  ← reed plates + pallets
+        │  [reed plates laid out]     │
+        │  [pallet holes align with   │
+        │   lever tips above]         │
+        └─────────────────────────────┘
 ```
 
-Traditional makers do this by hand in 2D CAD. This tool does it mathematically.
+The **action board** has button holes on top and lever slots underneath. Each lever pivots on a post, connecting a button to a pallet hole. The **reed pan** sits below, holding the reed plates with pallet valves that the levers open.
+
+The layout puzzle: place 23-29 reed plates on the reed pan and route 23-29 levers through the action board so that:
+- No reed plate overlaps another (reed pan layer)
+- No lever slot crosses a button hole (action board layer)
+- No lever slot crosses another lever slot (action board layer)
+- Each lever can reach from its button to its pallet with at most gentle bends
+
+## Physical Collision Model
+
+The action board and reed pan are **separate layers**. Collisions only happen within the same layer:
+
+| Collision | Layer | Constraint |
+|-----------|-------|------------|
+| Reed plate vs reed plate | Reed pan | Can't overlap |
+| Lever vs button hole | Action board | Lever slot can't cross a button hole |
+| Lever vs lever | Action board | Lever slots can't cross each other |
+| Lever vs pivot post | Action board | Lever can't pass through a pivot pin |
+| Lever vs pallet hole | Action board | Lever can't cross another pallet opening |
+
+**Levers do NOT collide with reed plates** — they are on opposite sides of the board.
+
+## The Beaumont Layout
+
+The solver is configured for the R. Morse & Co. Beaumont, a 52-key Hayden Duet:
+
+- **Left hand:** 23 keys (Bb2 to B4), 4 rows
+- **Right hand:** 29 keys (C#4 to D6), 6 rows
+- **Hayden pattern:** each step right = +2 semitones (whole tone), each row up = +7 semitones at up-right neighbor
+
+Note layout verified against the official R. Morse & Co. Beaumont note chart.
 
 ## Architecture
-
-The solver treats the problem as a constrained optimization: button positions are fixed, reed plate positions are free variables, and the cost function penalizes collisions, long levers, and wasted space.
 
 ### Module Overview
 
 ```
 concertina/
   config.py          ─── Configuration dataclasses (all physical params)
-  hayden_layout.py   ─── Button grid generation
+  hayden_layout.py   ─── Beaumont 52-key button grid (23 LH + 29 RH)
   reed_specs.py      ─── Reed plate dimensions and geometry
-  geometry.py        ─── Fast numpy 2D geometry (SAT overlap, line-rect distance)
-  greedy_placer.py   ─── Sequential reed placement (primary layout strategy)
-  obstacles.py       ─── Shapely-based collision detection (validation only)
-  lever_router.py    ─── Lever pathfinding (straight + dogleg, numpy-based)
-  cost_function.py   ─── Shapely-based objective (validation only)
-  cost_fast.py       ─── Numpy-based objective (for DE optimizer)
+  geometry.py        ─── Fast numpy 2D geometry (SAT, segment distances)
+  sector_placer.py   ─── Angular sector assignment + greedy radius search
+  lever_router.py    ─── Lever routing with angle-limited doglegs
+  greedy_placer.py   ─── Legacy greedy placer (no sector assignment)
+  obstacles.py       ─── Shapely collision detection (validation only)
+  cost_function.py   ─── Shapely objective function (validation only)
+  cost_fast.py       ─── Numpy objective function (for DE optimizer)
   solver.py          ─── Differential evolution wrapper
   visualize.py       ─── Matplotlib 2D rendering
   main.py            ─── CLI entry point
@@ -40,174 +75,98 @@ concertina/
 ### Data Flow
 
 ```
-  InstrumentSpec          ReedDimensions
-       │                       │
-       ▼                       ▼
-  HaydenLayout ──────► generate_reed_table() ──► [ReedSpec × 26]
-       │                                              │
-       │              ┌───────────────────────────────┘
-       │              │
-       ▼              ▼
-  Greedy Placer / DE Solver ──► [ReedPlate × 26]  (positioned)
-       │                              │
-       ▼                              ▼
-  ObstacleField ◄────────────── get_polygon()
+  ConcertinaConfig
+       │
+       ├── InstrumentSpec ──► HaydenLayout.from_beaumont()
+       │                           │
+       ├── ReedDimensions  ──► generate_reed_table()
+       │                           │
+       │                    ┌──────┘
+       ▼                    ▼
+  SectorPlacer ──────► [ReedPlate × N]  (positioned on reed pan)
        │
        ▼
-  LeverRouter ──► [LeverPath × 26]
+  LeverRouter ──────► [LeverPath × N]   (routed through action board)
        │
        ▼
-  CostBreakdown ──► Visualization / JSON output
+  Visualization + JSON output
 ```
 
-## Phases of the Algorithm
+## Algorithm
 
-### Phase 1: Define the Button Grid
+### Step 1: Sector Assignment (Hungarian Algorithm)
 
-The Hayden layout is isomorphic — every key has the same geometric relationship to its neighbors. Buttons sit on a hexagonal grid:
+Each button has a natural outward angle from the grid center. We create N angular slots spread around 360° and use `scipy.optimize.linear_sum_assignment` to optimally assign buttons to slots, minimizing total angular deviation.
 
-- **Horizontal pitch:** 16.5mm center-to-center
-- **Vertical offset:** 14.3mm (pitch × √3/2)
-- **Rows are staggered** by half a pitch
+This ensures levers fan out radially in their own lanes, avoiding crossings.
 
-```python
-layout = HaydenLayout.from_beaumont("RH")  # 26 keys, right hand
-```
+### Step 2: Greedy Radius Search
 
-Each button has a fixed `(x, y)` position. These never move during optimization.
+For each button-slot pair (largest reed first), sweep over radii to find the closest position where:
+- The reed plate doesn't overlap any already-placed plate (SAT check)
+- The lever path clears all button holes in the action board (segment-to-circle distance)
+- The lever is at least 35mm long (prevents steep pallet angle)
 
-### Phase 2: Define the Reed Plates
+The plate is oriented to point its pallet toward the button (`φ = atan2(by-cy, bx-cx)`).
 
-Accordion reed plates are rectangles that taper from bass to treble:
+### Step 3: Lever Routing
 
-| Register | Length | Width | Lever Ratio |
-|----------|--------|-------|-------------|
-| Bass     | 55mm   | 18mm  | 2.2:1       |
-| Mid      | ~37mm  | ~16mm | 2.0:1       |
-| Treble   | 24mm   | 15mm  | 1.8:1       |
+For each button-pallet pair, the router tries paths in order:
 
-Dimensions are log-interpolated, ratios linearly interpolated. Each reed plate is positioned in polar coordinates `(r, θ, φ)` — distance from center, angle, and plate rotation.
+1. **Straight line** — check if the lever slot clears all button holes, pallet holes, and previously placed lever slots
+2. **Single gentle bend** (max 30°) — try waypoints around blocking obstacles
+3. **Double gentle bend** (max 30° each) — try pairs of waypoints
 
-### Phase 3: Place the Reeds (Greedy Strategy)
+Each placed lever becomes an obstacle for subsequent levers (incremental routing).
 
-Pure differential evolution on 52 dimensions doesn't converge in reasonable time. Instead, we place reeds one at a time using a greedy algorithm:
+Physical constraints for laser-cut 1.5mm stainless steel levers:
+- Maximum 2 bends per lever
+- Maximum 30° deviation from straight per bend
+- Minimum 35mm total lever length
 
-1. **Sort reeds by size** (largest/bass first — they need the most space)
-2. **For each reed**, sweep over candidate positions `(r, θ)`:
-   - Check that the reed plate doesn't overlap any already-placed plate
-   - Check that the lever path (button → pallet) doesn't cross any placed plate
-   - Enforce minimum lever length (35mm)
-   - Point the plate toward its button (`φ = atan2(by-cy, bx-cx)`)
-3. **Pick the position with the shortest lever**
+### Step 4: Pivot Placement
 
-This produces a collision-free layout for ~14/26 reeds. The remaining reeds fall back to collision-free placement without lever clearance guarantees.
+The pivot sits along the lever path at `L / (R + 1)` from the button end, where R is the leverage ratio. For a 2:1 ratio, the pivot is at 1/3 of the lever length.
 
-### Phase 4: Route the Levers
+## Geometry: Shapely vs Numpy
 
-For each button-pallet pair, the router finds a physical path for the lever:
+**Shapely is never used in hot paths.** All placement and routing geometry uses pure numpy math in `geometry.py`:
 
-**v1 (current):**
-1. Try a **straight line** from button to pallet
-2. If it intersects an obstacle (another reed plate), try a **single-bend dogleg** via tangent waypoints around the blocking obstacle
-3. If no clear path exists, mark as **infeasible**
+| Operation | Method | Module |
+|-----------|--------|--------|
+| Reed-reed overlap | Separating Axis Theorem | `geometry.py` |
+| Lever-button clearance | Segment-to-circle distance | `geometry.py` |
+| Lever-lever clearance | Segment-to-segment distance | `geometry.py` |
+| Lever-rectangle clearance | Segment-to-rect distance | `geometry.py` |
 
-The lever has physical width (3mm min), so collision checks buffer the centerline by half the width.
-
-**Pivot placement:** For a 2:1 ratio, the pivot sits at 1/3 of the lever length from the button end. This means 2.5mm of button travel produces 5mm of pallet lift.
-
-### Phase 5: Evaluate the Cost
-
-The cost function judges a layout. Lower is better.
-
-**Tier 1 (always active):**
-
-| Penalty | Formula | Weight | Purpose |
-|---------|---------|--------|---------|
-| Reed overlap | `overlap_area × w` | 1e6 | No overlapping plates |
-| Lever collision | `count × w` | 1e6 | No blocked levers |
-| Lever length | `Σ(L²) × w` | 0.1 | Prefer short levers |
-| Hex area | `hull_area × w` | 0.01 | Compact instrument |
-| Ratio deviation | `Σ(R-target)² × w` | 200 | Consistent feel |
-
-**Tier 2 (activate later):** bend count, neighbor ratio uniformity, lever-lever proximity, minimum length.
-
-**Tier 3 (production polish):** pivot accessibility, center of gravity balance, chamber proportionality.
-
-### Geometry: Shapely vs Numpy
-
-A critical architectural decision: **shapely is never used in hot paths.** All real-time geometry (greedy placement, lever routing, optimizer cost function) uses pure numpy math in `geometry.py`:
-
-| Operation | Numpy (`geometry.py`) | Shapely (`obstacles.py`) |
-|-----------|----------------------|-------------------------|
-| Reed-reed overlap | SAT (Separating Axis Theorem) | `Polygon.intersects()` |
-| Lever-reed collision | Line-segment to rect distance | `LineString.buffer().intersects()` |
-| Lever-circle collision | Point-to-segment distance | `Point.buffer().intersects()` |
-| Speed | ~3ms per full evaluation | ~154ms per full evaluation |
-| Used by | `greedy_placer`, `lever_router`, `cost_fast` | `cost_function` (validation), `visualize` |
-
-Shapely remains for:
-- **Final validation** (`cost_function.py`) — exact geometry confirms the numpy results
-- **Visualization** (`visualize.py`) — plotting polygons
-- **Obstacle field** (`obstacles.py`) — used by the shapely cost function only
-
-Three cost function implementations exist:
-- **`cost_function.py`** — Shapely-based, exact geometry, ~154ms/eval. Used for final validation only.
-- **`cost_fast.py`** — Numpy-based, approximate geometry, ~3.4ms/eval. Used by DE optimizer.
-- **`greedy_placer.py`** — Uses `geometry.py` directly for placement checks. Primary layout strategy.
-
-### Phase 6: Optimize (Optional Polish)
-
-After greedy placement, differential evolution can fine-tune positions:
-
-1. **Stage 1 (52D):** Optimize `[r, θ]` per reed, φ fixed to point-at-center
-2. **Stage 2 (78D):** Unlock φ, seed with Stage 1 result
-
-This is optional — the greedy result is often good enough for initial prototyping.
-
-## Physical Constraints
-
-### What's Fixed
-- **Button positions** — determined by the Hayden layout and player ergonomics
-- **Reed plate dimensions** — determined by the reeds you bought
-- **Lever ratio** — 2:1 target (graduated 2.2 bass → 1.8 treble)
-
-### What's Flexible
-- **Reed plate positions** — anywhere around the button field
-- **Reed plate rotation** — any angle
-- **Lever path** — straight or dogleg (bent)
-- **Reed pan shape** — emergent from the optimization (convex hull of all plates)
-
-### Clearances
-
-| Type | Distance | Description |
-|------|----------|-------------|
-| Static floor | 1.2mm | Lever to any fixed object (hard constraint) |
-| Dynamic gap | 1.8mm | Between moving levers (soft target) |
-| Pivot buffer | 2.0mm | Around pivot posts |
-
-### Key Insight: Levers Pass Under Buttons
-
-Levers travel through slots in the action board, underneath the button holes. They do **not** need to route around buttons — only around other reed plates and pivot posts. This is critical for the obstacle model.
+Shapely is only used for final validation (`cost_function.py`) and visualization (`visualize.py`).
 
 ## Configuration
 
-All parameters are configurable via dataclasses with JSON save/load:
+All parameters are dataclasses with JSON save/load:
 
 ```python
 from concertina.config import ConcertinaConfig
 
-# Use Beaumont/Holden defaults
 config = ConcertinaConfig.defaults()
-
-# Customize
 config.ratio.target_ratio = 1.5
 config.clearance.static_floor = 1.5
-config.weights.w_bend = 50.0  # activate bend penalty
-
-# Save/load
 config.save("my_instrument.json")
-config = ConcertinaConfig.load("my_instrument.json")
 ```
+
+### Key Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Button diameter | 6.0mm | Beaumont standard |
+| Horizontal pitch | 16.5mm | Button center-to-center |
+| Button travel | 2.5mm | Holden-style |
+| Lever thickness | 1.5mm | 304 stainless steel |
+| Target ratio | 2.0:1 | Graduated: bass 2.2, treble 1.8 |
+| Min pallet lift | 4.5mm | Hard constraint |
+| Static clearance | 1.2mm | Lever to fixed object |
+| Dynamic gap | 1.8mm | Between moving levers |
+| Min lever length | 35mm | Prevents steep pallet angle |
 
 ## Usage
 
@@ -215,26 +174,30 @@ config = ConcertinaConfig.load("my_instrument.json")
 # Install
 pip install -e ".[dev]"
 
-# Run solver on right hand side
-python -m concertina.main --side RH --maxiter 200 --plot
+# Generate layout for both sides
+python -m concertina.main --plot
 
-# Run with custom config
-python -m concertina.main --side both --config my_config.json --plot --output result.json
+# Single side
+python -m concertina.main --side RH --plot
+
+# Custom config
+python -m concertina.main --config my_config.json --plot --output result.json
 
 # Run tests
 pytest tests/ -v
 ```
 
-## Project Status
+## Current Results
 
-- **Phases 1-8:** Implemented, 58 tests passing
-- **Mini fixture (6 reeds):** Solver converges to collision-free layout in ~55s
-- **Full scale (26 reeds):** Greedy placer produces 14/26 feasible levers, needs v2 router for remaining doglegs
+| Side | Keys | Feasible | Straight | Dogleg | Time |
+|------|------|----------|----------|--------|------|
+| LH | 23 | 21/23 | 20 | 1 | ~6s |
+| RH | 29 | 26/29 | 22 | 4 | ~6s |
 
-### Next Steps
+73 tests passing. All geometry hot paths use numpy (no shapely).
 
-1. Separate obstacle sets for placement vs routing (button holes aren't lever obstacles)
-2. Extract greedy placer into its own module
-3. Tighter collision checks in the fast cost function (OBB instead of bounding circles)
-4. v2 visibility graph router for multi-bend doglegs
-5. Build123d integration for 3D CAD export (STEP files for laser cutting)
+## Next Steps
+
+1. Improve routing for the remaining 5 infeasible levers (interior buttons in dense grid)
+2. Build123d integration for 3D CAD export (STEP files for laser cutting)
+3. Optional DE polish stage using sector placement as starting point

@@ -300,76 +300,87 @@ Each phase is independently testable before moving to the next. The 6-reed mini 
 | 12 | `lever_router.py` (v2) | obstacles, shapely | visibility graph + Dijkstra (if needed) |
 | 13 | `cost_function.py` (Tier 3) | all | pivot access, CoG, chamber proportion |
 
-## Completed (as of 2026-04-19)
+## Completed (as of 2026-04-20)
 
 Phases 1-8 are implemented with 58 passing tests. All modules exist and work end-to-end on the 6-reed mini fixture. Full 26-key runs produce plausible layouts but need further tuning.
 
 **Files implemented:**
-- `config.py`, `hayden_layout.py`, `reed_specs.py`, `geometry.py`, `obstacles.py`
-- `greedy_placer.py`, `lever_router.py` (v1, numpy-based), `cost_function.py` (all tiers), `cost_fast.py`
+- `config.py`, `hayden_layout.py` (Beaumont 23+29 keys), `reed_specs.py`, `geometry.py`
+- `sector_placer.py` (primary), `greedy_placer.py` (legacy), `lever_router.py` (v2 with angle limits)
+- `cost_function.py`, `cost_fast.py`, `obstacles.py` (all validation only)
 - `solver.py`, `visualize.py`, `main.py`
-- Tests: `test_config.py`, `test_hayden_layout.py`, `test_reed_specs.py`, `test_geometry.py`, `test_obstacles.py`, `test_lever_router.py`, `test_cost_function.py`
+- Tests: 73 passing, all modules covered
 - `tests/mini_fixture.py`
 
 **Shapely boundary:** Shapely is only used in `cost_function.py` (validation), `obstacles.py` (validation), and `visualize.py` (plotting). All hot paths use `geometry.py` (numpy).
 
+**Current results:** LH 21/23, RH 26/29 feasible with physically realistic levers (max 2 bends, max 30° each).
+
 ## Learnings from First Full-Scale Runs
 
-### 1. Shapely is too slow for ANY hot path
-- **Problem:** The shapely-based cost function (`cost_function.py`) takes ~154ms per evaluation. The greedy placer and lever router also used shapely, making them unnecessarily slow.
-- **Solution:** `geometry.py` provides pure numpy 2D geometry primitives: SAT (Separating Axis Theorem) for rotated rectangle overlap, line-segment-to-rectangle distance for lever clearance checks. All hot paths (greedy placer, lever router, fast cost function) use these. Shapely is **only** used for final validation (`cost_function.py`) and visualization (`visualize.py`).
-- **Result:** Lever routing for 26 reeds: 0.07s (numpy) vs seconds (shapely). Greedy placement for 26 reeds: ~7s total.
+### 1. Correct physical collision model
+- **The action board and reed pan are separate layers.** Levers (action board) do NOT collide with reed plates (reed pan). They're on opposite sides.
+- **Lever obstacles are:** other button holes, other lever slots, pivot posts, pallet holes.
+- **Reed obstacles are:** other reed plates only.
+- Getting this wrong (treating reed plates as lever obstacles) made the problem much harder than it actually is. RH went from 19/29 to 26/29 feasible just by fixing this.
 
-### 2. Differential evolution struggles with 52D
-- **Problem:** 52D (26 reeds x 2 params) is at the edge of what DE can handle. With popsize=15 and 300 generations it doesn't reliably find collision-free layouts. The search space is too large for random exploration.
-- **Better approach:** Greedy sequential placement as a seeding strategy. Place one reed at a time (largest first), finding the best position for each given already-placed reeds. This produces a good starting point that DE can then polish.
-- **Result:** Greedy placement achieves 0 reed collisions and 14/26 feasible levers on the first try.
+### 2. Shapely is too slow for ANY hot path
+- Shapely cost function: ~154ms/eval. Numpy (`geometry.py`): ~3ms/eval (46x faster).
+- All placement and routing uses numpy. Shapely only for final validation and visualization.
 
-### 3. Levers pass UNDER buttons, not around them
-- **Problem:** Initially the obstacle field treated button holes as no-go zones for levers. This made it nearly impossible to route levers in a dense 26-key grid since any lever crossing multiple rows would hit a button hole.
-- **Fix:** Levers pass through slots underneath the action board. They do NOT need to avoid button holes. Obstacles for lever routing should only include: other reed plates, pivot posts, and other levers. Button holes are only obstacles for reed plate placement.
-- **Action needed:** Update `obstacles.py` to have separate obstacle sets for "reed placement" vs "lever routing".
+### 3. Sector-based placement beats global optimization
+- DE on 52D doesn't converge in reasonable time.
+- Sector assignment (Hungarian algorithm) + greedy radius search produces good layouts in ~6 seconds.
+- The key insight: assign each button an angular lane so levers fan out radially without crossing. Then only the radius is a free variable per reed.
 
-### 4. Minimum lever length matters
-- **Problem:** The greedy placer initially placed reeds as close as possible to buttons, resulting in levers of 0-10mm -- way too short mechanically.
-- **Fix:** Enforce minimum lever length of 35mm in the placement search. Skip any candidate position where the button-to-pallet distance is below this threshold.
+### 4. Physical lever constraints
+- Max 2 bends per laser-cut lever, max 30° per bend.
+- Minimum lever length 35mm (prevents steep pallet angle).
+- The router rejects any path that violates these — earlier versions allowed unrealistic zigzag paths.
 
-### 5. Placement order affects quality
-- Placing largest (bass) reeds first works well -- they need the most space and constrain everything else.
-- The first ~14 reeds place cleanly with both reed-reed and lever-reed clearance.
-- Later reeds (15-26) struggle because space is filled. These need either better angular search resolution or the v2 dogleg router.
+### 5. Interleaved routing matters
+- Each placed lever becomes an obstacle for subsequent levers (lever-lever collision).
+- The router processes levers incrementally, building up the obstacle set.
+- Placement order (largest reed first) still works well.
+
+### 6. The Beaumont is 23+29, not 26+26
+- R. Morse Beaumont: 23 LH (Bb2–B4), 29 RH (C#4–D6).
+- Verified against the official note chart. The Hayden pattern uses whole-tone rows with +7 semitone row jumps.
 
 ## What to Do Next
 
-### Priority 1: Fix obstacle model for lever routing
-Update `obstacles.py` to separate "placement obstacles" (buttons + reeds) from "routing obstacles" (reeds + pivots only). This single change should increase feasible levers from 14/26 to ~20+/26.
+### Priority 1: Remaining 5 infeasible levers
+LH has 2 (B3, C4), RH has 3 (B4, D5, E5) infeasible. These are interior buttons whose levers must cross through the dense button grid and can't find a path within the 30° bend limit. Options:
+- Try different sector assignments or routing orders
+- Widen angular search for specific problem notes
+- Accept that a few may need manual adjustment
 
-### Priority 2: Greedy placer as a proper module
-Extract the greedy placement logic into `concertina/greedy_placer.py`:
-- Place reeds sequentially, largest first
-- Check reed-reed collision (shapely, since this only runs once per reed)
-- Check lever-reed collision for each candidate
-- Enforce minimum lever length
-- Use as the default initial layout, optionally followed by DE polishing
+### Priority 2: Build123d CAD export
+Generate 3D parts from the 2D layout:
+- Action board with button holes and lever slots
+- Reed pan with pallet holes and reed plate mounting slots
+- Individual lever shapes (laser-cut profiles)
+- STEP file export for manufacturing
 
-### Priority 3: Tighter fast collision check ✅ DONE
-`geometry.py` now uses SAT (Separating Axis Theorem) for exact rotated-rectangle overlap and line-segment-to-rectangle distance for lever clearance. Replaces the bounding-circle approximation in the greedy placer and lever router.
+### Priority 3: Optional DE polish
+Use the sector placement as `x0` for a short DE run to fine-tune reed positions. The fast numpy cost function (`cost_fast.py`) makes this feasible in minutes.
 
-### Priority 4: v2 lever router
-Implement visibility graph + Dijkstra for multi-bend doglegs. Needed for the remaining ~6 levers that can't route straight through the dense layout.
+## Completed Milestones
 
-### Priority 5: DE polish stage
-Use the greedy result as `x0` for a short DE run (50-100 generations) to fine-tune positions. This should be fast since the starting point is already near-feasible.
+| Date | Milestone | Result |
+|------|-----------|--------|
+| 2026-04-19 | Initial solver | 58 tests, mini fixture converges |
+| 2026-04-19 | Fast numpy geometry | 46x speedup, no shapely in hot paths |
+| 2026-04-19 | Greedy placer | 10/26 feasible |
+| 2026-04-19 | Sector assignment | 19/26 feasible |
+| 2026-04-19 | Interleaved routing | 22/26 feasible |
+| 2026-04-19 | v2 visibility graph | 26/26 feasible (unrestricted bends) |
+| 2026-04-20 | Correct Beaumont notes | 23 LH + 29 RH verified against chart |
+| 2026-04-20 | Angle-limited router | Max 2 bends, 30° each |
+| 2026-04-20 | Correct obstacle model | Levers vs buttons+levers, not reed plates |
+| 2026-04-20 | Current best | LH 21/23, RH 26/29 |
 
-## Key Risks and Mitigations
-
-1. **52D is at the edge for DE.** Mitigate with greedy seeding (the primary strategy) followed by short DE polish.
-2. **Fast cost function is too loose.** Mitigate with OBB collision checks instead of bounding circles.
-3. **Ratio floor:** The PDF mentions treble ratio of 1.7:1, but at 2.5mm travel this gives only 4.25mm lift, violating the 4.5mm minimum. Using 1.8:1 as the floor instead.
-4. **Lever routing gets harder as layout fills.** The v2 visibility graph router is needed for the last ~6 reeds in a dense 26-key layout.
-5. **Worker parallelism requires picklable functions.** Keep objective as module-level function, not closure.
-
-## Future: Build123d Integration (not in scope yet)
+## Future: Build123d Integration
 
 Once the 2D solver produces optimal coordinates, a separate `cad_export.py` module will:
 - Generate 3D lever shapes (extrude the 2D lever paths to 1.5mm thickness)
