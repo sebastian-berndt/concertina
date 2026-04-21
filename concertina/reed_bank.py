@@ -107,8 +107,8 @@ class PlacedBank:
             # Position along the width axis (local y, perpendicular to phi)
             along = offset - w / 2
 
-            # Pallet edge: inner face at local_x = -depth/2 (toward buttons)
-            local_x = -d / 2
+            # Pallet hole goes through the center of the standing block
+            local_x = 0
             local_y = along
 
             # Rotate and translate to world space
@@ -144,15 +144,8 @@ class PlacedIndividual:
         return rect_corners_buffered(self.cx, self.cy, d, w, self.phi, clearance)
 
     def pallet_position(self) -> tuple[float, float]:
-        """Pallet hole position (inner face, toward buttons)."""
-        w, d = self.footprint
-        cos_p = math.cos(self.phi)
-        sin_p = math.sin(self.phi)
-        # Inner face at local_x = -depth/2
-        local_x = -d / 2
-        wx = self.cx + cos_p * local_x
-        wy = self.cy + sin_p * local_x
-        return (wx, wy)
+        """Pallet hole position (center of standing block)."""
+        return (self.cx, self.cy)
 
 
 @dataclass
