@@ -349,9 +349,40 @@ Phases 1-8 are implemented with 58 passing tests. All modules exist and work end
 
 ## What to Do Next
 
-### Priority 1: Reed Banks
+### Priority 1: Bank Placement for Lever Routing ← CURRENT FOCUS
 
-Replace individual reed plates with reed banks (multiple reeds per block). This is how real hybrid concertinas (Elise, etc.) work and dramatically simplifies packing.
+Reed banks are implemented and all 52 reeds pack inside the 200mm hex.
+But lever routing is poor (LH 5/23, RH 9/29) because banks are placed
+too close to the button grid — levers cross through other button holes.
+
+**The fix: row-aligned bank placement.**
+Each bank groups a Hayden row. Place each bank directly outward from
+its row, outside the button field. Levers go straight outward in
+parallel without crossing other rows' buttons.
+
+```
+  Current (bad):                Better (row-aligned):
+
+       bank somewhere              ● ● ● ●        ← other rows
+      ╔═══════╗                   ● ● ● ● ●
+      ║       ║                    ● ● ● ● ● ●
+      ╚═══════╝                     B1 B2 B3 B4    ← this row's buttons
+     ╲  ╲│╱  ╱ cross                 │  │  │  │    ← parallel levers
+      ● ● ● ●                      ╔════════════╗
+      ● ● ● ●                      ║   bank     ║  ← outside button field
+                                    ╚════════════╝
+```
+
+Implementation steps:
+1. Compute each Hayden row's average position and outward direction
+2. Place bank at r = max_button_radius + margin, aligned with its row
+3. Score by lever feasibility (count how many levers clear button holes)
+4. Enforce hex boundary and bank-bank non-overlap
+5. Individual bass plates fill remaining edge space
+
+### Priority 1b: Reed Banks (DONE)
+
+Reed banks implemented and working. Details below for reference.
 
 #### The Physical Reality
 
@@ -528,6 +559,10 @@ Use the sector placement as `x0` for a short DE run to fine-tune reed positions.
 | 2026-04-20 | Hex boundary 200mm | Hard constraint, all plates must fit inside |
 | 2026-04-20 | Force-directed / L-BFGS-B | Attempted, doesn't converge (non-convex) |
 | 2026-04-20 | Current best (200mm hex) | LH 17/23, RH 16/29 — packing needs work |
+| 2026-04-21 | Measured reed dimensions | BINCI_STANDARD preset, per-note override support |
+| 2026-04-21 | Reed bank model | ReedBank, PlacedBank, assign_banks() by Hayden row |
+| 2026-04-21 | Bank placement | 52/52 reeds placed in 200mm hex (banks + individuals) |
+| 2026-04-21 | Lever routing with banks | LH 5/23, RH 9/29 — banks too close to button grid |
 
 ## Future: Build123d Integration
 

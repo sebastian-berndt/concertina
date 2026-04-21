@@ -189,26 +189,38 @@ pytest tests/ -v
 
 ## Current Results
 
-**Without hex boundary** (unconstrained reed pan size):
+### Reed Banks (current approach)
 
-| Side | Keys | Feasible | Straight | Dogleg | Time |
-|------|------|----------|----------|--------|------|
-| LH | 23 | 21/23 | 20 | 1 | ~6s |
-| RH | 29 | 26/29 | 22 | 4 | ~6s |
+Reeds are grouped onto banks by Hayden row. Large bass reeds stay as
+individual plates. Banks stand vertically on the reed pan.
 
-**With 200mm hex boundary** (default, ~7.9" across flats):
+| Side | Banks | Individual | Total Reeds | Placed | Levers Feasible |
+|------|-------|-----------|-------------|--------|-----------------|
+| LH | 3 | 9 bass | 23 | 23/23 | 5/23 |
+| RH | 6 | 0 | 29 | 29/29 | 9/29 |
 
-| Side | Keys | Feasible | Straight | Dogleg | Time |
-|------|------|----------|----------|--------|------|
-| LH | 23 | 17/23 | 16 | 1 | ~3s |
-| RH | 29 | 16/29 | 11 | 5 | ~3s |
+All 52 reeds fit inside the 200mm hex. Lever feasibility is low because
+banks are placed too close to the button grid — levers cross button holes.
+Next step: row-aligned bank placement (banks outside the button field).
+
+### Individual Plates (previous approach, no banks)
+
+| Constraint | LH | RH |
+|------------|-----|-----|
+| No hex boundary | 21/23 feasible | 26/29 feasible |
+| 200mm hex | 17/23 feasible | 16/29 feasible |
 
 73 tests passing. All geometry hot paths use numpy (no shapely).
 
-The gap between unconstrained and hex-constrained results shows the reed packing algorithm needs improvement. The greedy sector placer can't optimally pack rectangular plates into a hexagon — this is the main open problem.
+### Reed Dimensions
+
+Three sources supported:
+- **BINCI_STANDARD preset**: 52 notes with realistic Italian accordion reed plate dimensions
+- **Custom measurements**: pass a dict of `{note: (length, width)}` per note
+- **Interpolated fallback**: log-interpolated from bass (54×18mm) to treble (18.5×11mm)
 
 ## Next Steps
 
-1. **Better reed packing** — simulated annealing, two-ring layout, or jigsaw slot approach to fit all reeds inside the 200mm hex
+1. **Row-aligned bank placement** — place each bank outward from its Hayden row so levers go straight out without crossing other buttons
 2. Build123d integration for 3D CAD export (STEP files for laser cutting)
-3. Optional DE polish stage using sector placement as starting point
+3. Optional DE polish stage
