@@ -78,18 +78,23 @@ class PlacedBank:
     phi: float                  # rotation angle (radians)
 
     def get_corners(self, clearance: float = 0.0) -> np.ndarray:
-        """4 corners of the bank footprint (width x depth rectangle)."""
+        """4 corners of the bank footprint on the reed pan.
+
+        The bank is oriented so that:
+        - Depth (short, 20mm) runs along phi direction (toward/away from buttons)
+        - Width (long, sum of reed widths) runs perpendicular to phi
+        """
         w, d = self.bank.footprint
+        # depth along local x (phi direction), width along local y (perpendicular)
         return rect_corners_buffered(
-            self.cx, self.cy, w, d, self.phi, clearance,
+            self.cx, self.cy, d, w, self.phi, clearance,
         )
 
     def pallet_positions(self) -> list[tuple[float, float]]:
         """World-space (x, y) of each pallet hole.
 
-        Pallets are along the width edge, on the side facing
-        the pallet_edge direction (perpendicular to phi, offset
-        by depth/2 from center).
+        Pallets line up along the width edge (long edge, perpendicular to phi),
+        on the inner face (closest to buttons, at local_x = -depth/2).
         """
         offsets = self.bank.pallet_offsets()
         w, d = self.bank.footprint
@@ -99,13 +104,12 @@ class PlacedBank:
         sin_p = math.sin(self.phi)
 
         for offset in offsets:
-            # Position along the width axis (centered)
+            # Position along the width axis (local y, perpendicular to phi)
             along = offset - w / 2
 
-            # Pallet edge is at +depth/2 from center in the local y direction
-            # (the edge facing inward toward buttons)
-            local_x = along
-            local_y = -d / 2  # pallet edge (toward buttons)
+            # Pallet edge: inner face at local_x = -depth/2 (toward buttons)
+            local_x = -d / 2
+            local_y = along
 
             # Rotate and translate to world space
             wx = self.cx + cos_p * local_x - sin_p * local_y
@@ -136,16 +140,18 @@ class PlacedIndividual:
 
     def get_corners(self, clearance: float = 0.0) -> np.ndarray:
         w, d = self.footprint
-        return rect_corners_buffered(self.cx, self.cy, w, d, self.phi, clearance)
+        # depth along local x (phi direction), width along local y
+        return rect_corners_buffered(self.cx, self.cy, d, w, self.phi, clearance)
 
     def pallet_position(self) -> tuple[float, float]:
-        """Pallet hole position (center of the plate, pallet edge)."""
+        """Pallet hole position (inner face, toward buttons)."""
         w, d = self.footprint
         cos_p = math.cos(self.phi)
         sin_p = math.sin(self.phi)
-        local_y = -d / 2
-        wx = self.cx - sin_p * local_y
-        wy = self.cy + cos_p * local_y
+        # Inner face at local_x = -depth/2
+        local_x = -d / 2
+        wx = self.cx + cos_p * local_x
+        wy = self.cy + sin_p * local_x
         return (wx, wy)
 
 

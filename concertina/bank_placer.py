@@ -108,7 +108,8 @@ def bank_place(
                 for dphi in phi_offsets:
                     phi = phi_base + dphi
 
-                    corners = rect_corners_buffered(cx, cy, w, d, phi, clearance)
+                    pb = PlacedBank(bank=bank, cx=cx, cy=cy, phi=phi)
+                    corners = pb.get_corners(clearance)
 
                     if not rect_in_hexagon(corners, hex_af):
                         continue
@@ -117,7 +118,6 @@ def bank_place(
                         continue
 
                     # Score: mean lever length deviation from target
-                    pb = PlacedBank(bank=bank, cx=cx, cy=cy, phi=phi)
                     pallets = pb.pallet_positions()
                     lever_devs = []
                     for reed, pallet in zip(bank.reeds, pallets):
@@ -168,7 +168,8 @@ def bank_place(
                 for dphi in phi_offsets:
                     phi = phi_base + dphi
 
-                    corners = rect_corners_buffered(cx, cy, w, d, phi, clearance)
+                    pi_candidate = PlacedIndividual(spec=spec, cx=cx, cy=cy, phi=phi)
+                    corners = pi_candidate.get_corners(clearance)
 
                     if not rect_in_hexagon(corners, hex_af):
                         continue
@@ -176,18 +177,13 @@ def bank_place(
                     if any(rects_overlap(corners, ec) for ec in placed_corners):
                         continue
 
-                    # Pallet position (center of pallet edge)
-                    cos_p = math.cos(phi)
-                    sin_p = math.sin(phi)
-                    px = cx - sin_p * (-d / 2)
-                    py = cy + cos_p * (-d / 2)
-
+                    px, py = pi_candidate.pallet_position()
                     lever_len = math.sqrt((bx - px)**2 + (by - py)**2)
                     score = abs(lever_len - target_lever_length) + r * 0.05
 
                     if score < best_score:
                         best_score = score
-                        best = PlacedIndividual(spec=spec, cx=cx, cy=cy, phi=phi)
+                        best = pi_candidate
 
         if best is not None:
             placed_individuals.append(best)
