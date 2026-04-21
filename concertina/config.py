@@ -109,6 +109,8 @@ class ReedDimensions:
     treble_length: float = 24.0        # mm, shortest reed plate
     treble_width: float = 15.0         # mm
     pallet_offset_ratio: float = 0.2   # pallet at this fraction from plate tip
+    bank_depth: float = 20.0           # mm, reed block depth (footprint on reed pan)
+    bank_wall_thickness: float = 2.0   # mm, wall between reed slots on a bank
 
 
 @dataclass
